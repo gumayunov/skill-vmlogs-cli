@@ -16,9 +16,12 @@ class FakePlaywright:
     """Вместо playwright-cli. mode: silent — сессия жива без окна; headed — только после окна;
     never — вход так и не случился."""
 
-    def __init__(self, mode, open_fails=False):
+    def __init__(self, mode, open_fails=False, hang=(), close_hangs=False):
         self.mode = mode
         self.open_fails = open_fails
+        self.hang = hang  # команды, которые «зависают»: subprocess.TimeoutExpired
+        self.close_hangs = close_hangs
+        self.kwargs = []
         self.headed = False
         self.calls = []
 
@@ -27,6 +30,9 @@ class FakePlaywright:
         assert cwd, "playwright-cli должен работать во временном каталоге"
         args = cmd[2:]
         self.calls.append(args)
+        self.kwargs.append(kwargs)
+        if any(a in self.hang for a in args[:3]) or (args[0] == "close" and self.close_hangs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
         if args[0] == "open":
             if self.open_fails:
                 return subprocess.CompletedProcess(cmd, 1, "", "net::ERR_NAME_NOT_RESOLVED")
@@ -156,6 +162,33 @@ class BrowserLoginTest(unittest.TestCase):
             self.login(playwright)
         self.assertFalse(self.cookie.exists())
         self.assertEqual(playwright.calls[-1], ["close"])
+
+    def test_playwright_gets_devnull_stdin_and_timeout(self):
+        playwright = FakePlaywright("silent")
+        self.login(playwright)
+        for kwargs in playwright.kwargs:
+            self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+            self.assertEqual(kwargs["timeout"], 60)
+
+    def test_hung_run_code_is_failed_attempt(self):
+        playwright = FakePlaywright("silent", hang=("run-code",))
+        with self.assertRaisesRegex(CliError, "за 5 минут вход не завершился"):
+            self.login(playwright)
+
+    def test_hung_open_is_cli_error(self):
+        playwright = FakePlaywright("silent", hang=("open",))
+        with self.assertRaisesRegex(CliError, "playwright-cli не ответил за 60 с"):
+            self.login(playwright)
+
+    def test_hung_close_does_not_mask_original_error(self):
+        playwright = FakePlaywright("silent", open_fails=True, close_hangs=True)
+        with self.assertRaisesRegex(CliError, "не открыл"):
+            self.login(playwright)
+
+    def test_hung_close_does_not_fail_login(self):
+        playwright = FakePlaywright("silent", close_hangs=True)
+        self.login(playwright)
+        self.assertEqual(self.cookie.read_text().strip(), GOOD)
 
     def test_open_failure(self):
         playwright = FakePlaywright("silent", open_fails=True)

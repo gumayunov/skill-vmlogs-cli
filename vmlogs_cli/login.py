@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import os
 import shutil
@@ -17,12 +18,12 @@ from pathlib import Path
 from typing import Optional
 
 from .errors import CliError
-from .transport import no_redirect_opener
+from .transport import host_label, no_redirect_opener
 
 
 def cookie_file(cfg_dir: Path, base_url: str) -> Path:
     """Cookie одна на хост Grafana: один вход обслуживает все профили с этим хостом."""
-    return cfg_dir / "cookies" / urllib.parse.urlsplit(base_url).netloc
+    return cfg_dir / "cookies" / host_label(base_url)
 
 
 def merge_cookies(header: str, set_cookies: list[str]) -> str:
@@ -82,7 +83,7 @@ class GrafanaSession:
                 return resp.status, resp.headers
         except urllib.error.HTTPError as e:
             return e.code, e.headers
-        except OSError:
+        except (OSError, http.client.HTTPException):
             return 0, None
 
     def valid(self, header: str) -> bool:
@@ -111,6 +112,7 @@ class GrafanaSession:
 
 
 PW_SESSION = "vmlogs-cli"
+PW_TIMEOUT = 60
 SILENT_TIMEOUT = 20
 LOGIN_TIMEOUT = 300
 FLUSH_TIMEOUT = 45
@@ -149,12 +151,23 @@ class BrowserLogin:
 
     def _pw(self, cwd: str, *args: str) -> subprocess.CompletedProcess:
         cmd = ["playwright-cli", f"-s={PW_SESSION}", *args]
-        return self.run(cmd, cwd=cwd, capture_output=True, text=True)
+        # stdin закрыт: иначе playwright-cli съедает stdin вызывающего цикла; timeout — от зависания.
+        return self.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=PW_TIMEOUT,
+        )
 
     def _open(self, cwd: str, headed: bool) -> None:
         url = self.session.base_url + "/"
         args = ["open", *(["--headed"] if headed else []), "--persistent"]
-        proc = self._pw(cwd, *args, "--profile", str(self.profile), url)
+        try:
+            proc = self._pw(cwd, *args, "--profile", str(self.profile), url)
+        except subprocess.TimeoutExpired:
+            raise CliError(f"playwright-cli не ответил за {PW_TIMEOUT} с") from None
         if proc.returncode != 0:
             detail = " ".join((proc.stderr or proc.stdout or "").split())[:300]
             raise CliError(
@@ -163,7 +176,9 @@ class BrowserLogin:
             )
 
     def _close(self, cwd: str) -> None:
-        self._pw(cwd, "close")
+        # Закрытие — уборка: его сбой не должен перекрывать исходную ошибку.
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+            self._pw(cwd, "close")
 
     def _capture(self, cwd: str) -> Optional[str]:
         # context.cookies(url) не открывает страниц и сам подбирает cookie родительских доменов.
@@ -172,7 +187,10 @@ class BrowserLogin:
             f"async page => {{ const cs = await page.context().cookies({url}); "
             "return cs.map(c => c.name + '=' + c.value).join('; '); }"
         )
-        proc = self._pw(cwd, "--raw", "run-code", code)
+        try:
+            proc = self._pw(cwd, "--raw", "run-code", code)
+        except subprocess.TimeoutExpired:
+            return None
         if proc.returncode != 0:
             return None
         try:

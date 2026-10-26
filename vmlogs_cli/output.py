@@ -69,12 +69,22 @@ def sort_records(rows: list[dict]) -> list[dict]:
     return rows
 
 
+def _cut(line: str, width: int, ref: str = "") -> str:
+    if not width or len(line) <= width:
+        return line
+    marker = f"truncated: {width}/{len(line)} chars"
+    if ref:
+        marker += f", get {ref}"
+    return f"{line[:width]}… [{marker}]"
+
+
 def short_line(
     row: dict, width: int, hide: Sequence[str], context: Optional[Sequence[str]] = None
 ) -> str:
     """`<время> <контейнер> <УРОВЕНЬ> <сообщение>  k=v …`, длинное — с маркером обрезки."""
     if not is_record(row):
-        return " ".join(f"{key}={_flat(value)}" for key, value in row.items())
+        # Строка `| stats` тоже бывает огромной (`by (_msg)`), но ссылки get у неё нет.
+        return _cut(" ".join(f"{key}={_flat(value)}" for key, value in row.items()), width)
     container_field, container = _first(row, CONTAINER_FIELDS)
     level_field, level = _first(row, LEVEL_FIELDS)
     used = {"_time", "_msg", container_field, level_field}
@@ -89,12 +99,10 @@ def short_line(
     line = " ".join([*head, _flat(row["_msg"])])
     if tail:
         line += "  " + " ".join(f"{key}={_flat(value)}" for key, value in tail)
-    if width and len(line) > width:
-        marker = f"truncated: {width}/{len(line)} chars"
-        if row.get("_stream_id") and row.get("_time"):
-            marker += f", get {row['_stream_id']}/{row['_time']}"
-        line = f"{line[:width]}… [{marker}]"
-    return line
+    ref = (
+        f"{row['_stream_id']}/{row['_time']}" if row.get("_stream_id") and row.get("_time") else ""
+    )
+    return _cut(line, width, ref)
 
 
 def json_line(row: dict, width: int, hide: Sequence[str]) -> str:

@@ -19,9 +19,11 @@ class FakeRun:
     def __init__(self, *results):
         self.results = list(results)
         self.calls = []
+        self.kwargs = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append(cmd)
+        self.kwargs.append(kwargs)
         code, out, err = self.results.pop(0)
         return subprocess.CompletedProcess(cmd, code, out.encode(), err.encode())
 
@@ -72,6 +74,12 @@ class KubectlFetchTest(unittest.TestCase):
         run = FakeRun((0, '{"a":1}\n\n{"a":2}\n', ""))
         transport = KubectlTransport("monitoring/vl:9428", run=run)
         self.assertEqual(list(transport.fetch("query", {"query": "*"})), ['{"a":1}', '{"a":2}'])
+
+    def test_stdin_is_not_inherited(self):
+        # ssh иначе съест stdin цикла `… | while read ref; do vmlogs-cli get "$ref"; done`.
+        run = FakeRun((0, "", ""))
+        KubectlTransport("monitoring/vl:9428", run=run).fetch("query", {"query": "*"})
+        self.assertIs(run.kwargs[0]["stdin"], subprocess.DEVNULL)
 
     def test_bad_request_message_from_verbose_rerun(self):
         verbose = (

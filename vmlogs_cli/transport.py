@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -32,6 +33,21 @@ def no_redirect_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(_NoRedirect)
 
 
+def host_label(url: str) -> str:
+    """hostname[:port] без userinfo: пароль из адреса не должен попасть ни в вывод, ни в имя файла."""
+    parts = urllib.parse.urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    host = parts.hostname or ""
+    return f"{host}:{port}" if port else host
+
+
+def public_url(url: str) -> str:
+    return f"{urllib.parse.urlsplit(url).scheme}://{host_label(url)}"
+
+
 def vl_error(code: int, body: str) -> str:
     if code == 400:
         return f"VictoriaLogs не принял запрос: {body[:2000]}"
@@ -50,7 +66,7 @@ def iter_lines(resp) -> Iterator[str]:
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 if line:
                     yield line
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:
             raise CliError(f"ответ оборвался: {e}") from None
 
 
@@ -62,7 +78,7 @@ class DirectTransport:
         self.timeout = timeout
 
     def describe(self) -> str:
-        return f"direct {self.url}"
+        return f"direct {public_url(self.url)}"
 
     def fetch(self, endpoint: str, params: dict[str, str]) -> Iterator[str]:
         data = urllib.parse.urlencode(params).encode()
@@ -71,7 +87,7 @@ class DirectTransport:
             resp = no_redirect_opener().open(req, timeout=self.timeout)
         except urllib.error.HTTPError as e:
             raise CliError(vl_error(e.code, http_error_body(e))) from None
-        except (urllib.error.URLError, OSError) as e:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             reason = getattr(e, "reason", e)
             raise CliError(f"{self.url} не ответил ({reason}) — проверь адрес и VPN") from None
         return iter_lines(resp)
@@ -131,7 +147,9 @@ class KubectlTransport:
 
     def _run(self, cmd: list[str]) -> subprocess.CompletedProcess:
         try:
-            return self.run(cmd, capture_output=True, timeout=self.timeout)
+            return self.run(
+                cmd, capture_output=True, timeout=self.timeout, stdin=subprocess.DEVNULL
+            )
         except FileNotFoundError:
             raise CliError(f"{cmd[0]} не найден в PATH") from None
         except subprocess.TimeoutExpired:
@@ -175,7 +193,7 @@ class GrafanaTransport:
         self._uid = None
 
     def describe(self) -> str:
-        return f"grafana {self.base_url}, датасорс {self.datasource or 'не задан'}"
+        return f"grafana {public_url(self.base_url)}, датасорс {self.datasource or 'не задан'}"
 
     def _open(self, path: str, data=None, retry: bool = True):
         body = urllib.parse.urlencode(data).encode() if data is not None else None
@@ -189,7 +207,7 @@ class GrafanaTransport:
             if e.code == 401 and retry and self.session.refresh():
                 return self._open(path, data, retry=False)
             raise CliError(self._explain(e)) from None
-        except (urllib.error.URLError, OSError) as e:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             reason = getattr(e, "reason", e)
             raise CliError(f"{self.base_url} не ответил ({reason}) — проверь VPN") from None
 

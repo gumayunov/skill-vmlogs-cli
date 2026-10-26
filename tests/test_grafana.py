@@ -27,6 +27,12 @@ class CookieHelpersTest(unittest.TestCase):
             Path("/c/cookies/grafana.example.com:8443"),
         )
 
+    def test_cookie_file_without_userinfo(self):
+        self.assertEqual(
+            cookie_file(Path("/c"), "https://u:p@grafana.example.com"),
+            Path("/c/cookies/grafana.example.com"),
+        )
+
     def test_save_secret_is_private(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "cookies" / "host"

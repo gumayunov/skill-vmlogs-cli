@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from .errors import CliError
 
@@ -104,10 +105,21 @@ def _csv(value: Optional[str]) -> Optional[list[str]]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _check_url(path: Path, key: str, url: str, example: str) -> None:
+    if not url:
+        return
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise CliError(
+            f"{path}: {key} должен начинаться с http:// или https://, например {example}, а не «{url}»"
+        )
+
+
 def load_settings(env: Mapping[str, str], cwd, explicit: Optional[str] = None) -> Settings:
     path = find_env_file(env, cwd, explicit)
     values = parse_env_file(path)
-    unknown = sorted(key for key in values if key not in KNOWN_KEYS)
+    # Чужие ключи не трогаем: env-файл можно делить с другими инструментами.
+    unknown = sorted(key for key in values if key.startswith("VMLOGS_") and key not in KNOWN_KEYS)
     if unknown:
         raise CliError(
             f"{path}: неизвестные ключи {', '.join(unknown)}. Известные: {', '.join(sorted(KNOWN_KEYS))}"
@@ -125,6 +137,17 @@ def load_settings(env: Mapping[str, str], cwd, explicit: Optional[str] = None) -
         raise CliError(
             f"{path}: VMLOGS_KUBE_SERVICE должен быть вида <namespace>/<service>:<port>, а не «{service}»"
         )
+    for key, example in (
+        ("VMLOGS_URL", "https://shop.example.com"),
+        ("VMLOGS_GRAFANA_URL", "https://grafana.example.com"),
+    ):
+        _check_url(path, key, values.get(key, ""), example)
+    ssh_host = values.get("VMLOGS_SSH_HOST", "")
+    # Хост с «-» ssh принял бы за опцию (-oProxyCommand=… запускает команду).
+    if ssh_host.startswith("-") or any(ch.isspace() for ch in ssh_host):
+        raise CliError(
+            f"{path}: VMLOGS_SSH_HOST — имя или адрес хоста без пробелов и не с «-», а не «{ssh_host}»"
+        )
     return Settings(
         path=path,
         transport=transport,
@@ -132,7 +155,7 @@ def load_settings(env: Mapping[str, str], cwd, explicit: Optional[str] = None) -
         kube_service=service,
         kubeconfig=values.get("VMLOGS_KUBECONFIG", ""),
         kube_context=values.get("VMLOGS_KUBE_CONTEXT", ""),
-        ssh_host=values.get("VMLOGS_SSH_HOST", ""),
+        ssh_host=ssh_host,
         grafana_url=values.get("VMLOGS_GRAFANA_URL", "").rstrip("/"),
         datasource=values.get("VMLOGS_DATASOURCE", ""),
         hide_fields=_csv(values.get("VMLOGS_HIDE_FIELDS")),
