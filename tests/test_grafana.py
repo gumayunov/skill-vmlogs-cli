@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.fakes import GOOD, FakeServer, grafana
+from tests.fakes import GOOD, FakeServer, grafana, no_proxy_env
 from vmlogs_cli.errors import CliError
 from vmlogs_cli.login import GrafanaSession, cookie_file, merge_cookies, save_secret
 from vmlogs_cli.transport import GrafanaTransport
@@ -111,7 +111,7 @@ class GrafanaTransportTest(unittest.TestCase):
         session = GrafanaSession(base, self.cookie, timeout=2)
         save_secret(self.cookie, GOOD)
         transport = GrafanaTransport(base, "Logs", session, timeout=2)
-        with self.assertRaises(CliError) as ctx:
+        with no_proxy_env(), self.assertRaises(CliError) as ctx:
             transport.datasources()
         self.assertIn("http://127.0.0.1:9 не ответил", str(ctx.exception))
         self.assertNotIn("u:p", str(ctx.exception))

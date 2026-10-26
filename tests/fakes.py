@@ -1,9 +1,11 @@
 """Поддельные HTTP-серверы для тестов."""
 
 import json
+import os
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 # Как отвечает VictoriaLogs на query с limit: последние записи, от новых к старым.
 RECORDS = [
@@ -22,6 +24,12 @@ RECORDS = [
         "level": "error",
     },
 ]
+
+
+def no_proxy_env():
+    """Окружение без *_proxy: с userinfo в адресе urllib не узнаёт 127.0.0.1 из no_proxy."""
+    keep = {k: v for k, v in os.environ.items() if "proxy" not in k.lower()}
+    return mock.patch.dict(os.environ, keep, clear=True)
 
 
 class FakeServer:
