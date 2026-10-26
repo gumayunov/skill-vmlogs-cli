@@ -5,7 +5,7 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from tests.fakes import FakeServer, victorialogs
+from tests.fakes import FakeServer, no_proxy_env, victorialogs
 from vmlogs_cli.errors import CliError
 from vmlogs_cli.transport import (
     DirectTransport,
@@ -45,7 +45,7 @@ class DirectTransportTest(unittest.TestCase):
 
     def test_unreachable_hides_userinfo(self):
         transport = DirectTransport("http://u:p@127.0.0.1:9", timeout=2)
-        with self.assertRaises(CliError) as ctx:
+        with no_proxy_env(), self.assertRaises(CliError) as ctx:
             transport.fetch("query", {"query": "*"})
         self.assertIn("http://127.0.0.1:9 не ответил", str(ctx.exception))
         self.assertNotIn("u:p", str(ctx.exception))
