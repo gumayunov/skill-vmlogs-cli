@@ -106,3 +106,46 @@ def victorialogs(prefix=""):
         return 404, [], "unknown endpoint"
 
     return handle
+
+
+GOOD = "grafana_session=good"
+LOGS_UID = "logs-uid"
+
+
+def grafana(redirect=False):
+    """Поддельная Grafana: вход по cookie GOOD, ротация из grafana_session=old, прокси датасорса."""
+    vl = victorialogs(prefix=f"/api/datasources/proxy/uid/{LOGS_UID}")
+    unauthorized = (401, [], '{"message":"Unauthorized"}')
+
+    def handle(method, path, params, headers):
+        cookie = headers.get("cookie", "")
+        if redirect:
+            return 302, [("Location", "https://sso.example.com/login")], ""
+        if path == "/api/user/auth-tokens/rotate" and method == "POST":
+            if "grafana_session=old" not in cookie:
+                return unauthorized
+            return (
+                200,
+                [
+                    ("Set-Cookie", "grafana_session=good; Path=/; HttpOnly"),
+                    ("Set-Cookie", "grafana_session_expiry=99; Path=/"),
+                ],
+                "",
+            )
+        if GOOD not in cookie:
+            return unauthorized
+        if path == "/api/user":
+            return 200, [], '{"login":"tester"}'
+        if path == "/api/frontend/settings":
+            datasources = {
+                "Logs": {
+                    "uid": LOGS_UID,
+                    "name": "Logs",
+                    "type": "victoriametrics-logs-datasource",
+                },
+                "Metrics": {"uid": "vm-uid", "name": "Metrics", "type": "prometheus"},
+            }
+            return 200, [], json.dumps({"datasources": datasources})
+        return vl(method, path, params, headers)
+
+    return handle
