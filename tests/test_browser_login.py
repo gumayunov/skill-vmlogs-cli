@@ -16,9 +16,21 @@ class FakePlaywright:
     """Вместо playwright-cli. mode: silent — сессия жива без окна; headed — только после окна;
     never — вход так и не случился."""
 
-    def __init__(self, mode, open_fails=False, hang=(), close_hangs=False):
+    def __init__(
+        self,
+        mode,
+        open_fails=False,
+        hang=(),
+        close_hangs=False,
+        headed_open_fails=False,
+        bad_captures=0,
+        bad_kind="exit",
+    ):
         self.mode = mode
         self.open_fails = open_fails
+        self.headed_open_fails = headed_open_fails
+        self.bad_captures = bad_captures  # первые N захватов cookie — сбойные
+        self.bad_kind = bad_kind  # exit — ненулевой код, text — не-JSON вывод
         self.hang = hang  # команды, которые «зависают»: subprocess.TimeoutExpired
         self.close_hangs = close_hangs
         self.kwargs = []
@@ -34,11 +46,16 @@ class FakePlaywright:
         if any(a in self.hang for a in args[:3]) or (args[0] == "close" and self.close_hangs):
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
         if args[0] == "open":
-            if self.open_fails:
+            if self.open_fails or (self.headed_open_fails and "--headed" in args):
                 return subprocess.CompletedProcess(cmd, 1, "", "net::ERR_NAME_NOT_RESOLVED")
             self.headed = "--headed" in args
             return subprocess.CompletedProcess(cmd, 0, "", "")
         if args[:2] == ["--raw", "run-code"]:
+            if self.bad_captures > 0:
+                self.bad_captures -= 1
+                if self.bad_kind == "exit":
+                    return subprocess.CompletedProcess(cmd, 1, "", "boom")
+                return subprocess.CompletedProcess(cmd, 0, "Error: page crashed\n", "")
             ready = self.mode == "silent" or (self.mode == "headed" and self.headed)
             return subprocess.CompletedProcess(cmd, 0, json.dumps(GOOD if ready else "") + "\n", "")
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -103,8 +120,9 @@ class BrowserLoginTest(unittest.TestCase):
         self.assertEqual(playwright.calls, [])
         self.assertFalse(self.cookie.exists())
 
-    def cookies_db(self, mtime):
-        db = self.dir / "chrome-profile" / "Default" / "Network" / "Cookies"
+    def cookies_db(self, mtime, network=True):
+        parts = ("Default", "Network", "Cookies") if network else ("Default", "Cookies")
+        db = self.dir.joinpath("chrome-profile", *parts)
         db.parent.mkdir(parents=True)
         db.write_bytes(b"")
         os.utime(db, (mtime, mtime))
@@ -120,19 +138,27 @@ class BrowserLoginTest(unittest.TestCase):
         self.assertNotIn("профиль не записал cookie", self.err.getvalue())
         self.assertEqual(self.cookie.read_text().strip(), GOOD)
 
+    def test_flush_sees_legacy_cookies_path(self):
+        self.cookies_db(2000.0, network=False)
+        self.login(FakePlaywright("headed"), wall=lambda: 1000.0)
+        self.assertNotIn("профиль не записал cookie", self.err.getvalue())
+
     def test_login_moment_is_taken_after_capture(self):
         playwright = FakePlaywright("headed")
+        events = []
+        original = playwright.__call__
+
+        def spy(cmd, cwd=None, **kwargs):
+            events.append("capture" if cmd[2:4] == ["--raw", "run-code"] else "pw")
+            return original(cmd, cwd=cwd, **kwargs)
 
         def wall():
-            playwright.calls.append("wall")
+            events.append("wall")
             return 1000.0
 
-        self.login(playwright, wall=wall)
-        self.assertEqual(playwright.calls.count("wall"), 1)
-        captures = [
-            i for i, args in enumerate(playwright.calls) if args[:2] == ["--raw", "run-code"]
-        ]
-        self.assertGreater(playwright.calls.index("wall"), captures[-1])
+        self.login(spy, wall=wall)
+        self.assertEqual(events.count("wall"), 1)
+        self.assertGreater(events.index("wall"), len(events) - 1 - events[::-1].index("capture"))
 
     def test_missing_playwright(self):
         with self.assertRaisesRegex(CliError, "нужен playwright-cli"):
@@ -189,6 +215,27 @@ class BrowserLoginTest(unittest.TestCase):
         playwright = FakePlaywright("silent", close_hangs=True)
         self.login(playwright)
         self.assertEqual(self.cookie.read_text().strip(), GOOD)
+
+    def test_headed_open_failure_after_silent_attempt(self):
+        playwright = FakePlaywright("never", headed_open_fails=True)
+        with self.assertRaisesRegex(CliError, "не открыл https://grafana.example.com/"):
+            self.login(playwright)
+        self.assertFalse(self.cookie.exists())
+        self.assertEqual(playwright.calls[-1], ["close"])
+
+    def test_run_code_nonzero_exit_is_failed_attempt(self):
+        playwright = FakePlaywright("silent", bad_captures=3, bad_kind="exit")
+        self.login(playwright)
+        self.assertEqual(self.cookie.read_text().strip(), GOOD)
+        runs = [args for args in playwright.calls if args[:2] == ["--raw", "run-code"]]
+        self.assertEqual(len(runs), 4)
+
+    def test_run_code_non_json_is_failed_attempt(self):
+        playwright = FakePlaywright("silent", bad_captures=2, bad_kind="text")
+        self.login(playwright)
+        self.assertEqual(self.cookie.read_text().strip(), GOOD)
+        runs = [args for args in playwright.calls if args[:2] == ["--raw", "run-code"]]
+        self.assertEqual(len(runs), 3)
 
     def test_open_failure(self):
         playwright = FakePlaywright("silent", open_fails=True)

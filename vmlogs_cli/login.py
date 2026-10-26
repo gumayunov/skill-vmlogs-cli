@@ -248,8 +248,8 @@ class BrowserLogin:
             raise CliError(f"для входа нужен playwright-cli: {PW_INSTALL_HINT}")
         # playwright-cli складывает служебный каталог .playwright-cli в текущий каталог.
         with tempfile.TemporaryDirectory() as cwd:
-            self._close(cwd)
             try:
+                self._close(cwd)
                 self._open(cwd, headed=False)
                 header = self._wait(cwd, SILENT_TIMEOUT)
                 logged_in_at = None

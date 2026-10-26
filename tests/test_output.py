@@ -115,7 +115,9 @@ class SortRecordsTest(unittest.TestCase):
             {"_time": 5, "_msg": "i"},
             {"_msg": "m"},
         ]
-        self.assertEqual([r["_msg"] for r in sort_records(rows)][-1], "b")
+        msgs = [r["_msg"] for r in sort_records(rows)]
+        self.assertEqual(sorted(msgs[:3]), ["i", "m", "n"])
+        self.assertEqual(msgs[-1], "b")
 
     def test_stats_rows_keep_order(self):
         rows = [{"c": "2"}, {"c": "1"}]

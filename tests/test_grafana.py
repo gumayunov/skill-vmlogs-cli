@@ -1,6 +1,7 @@
 import stat
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -100,6 +101,40 @@ class GrafanaTransportTest(unittest.TestCase):
         self.assertEqual(
             self.cookie.read_text().strip(), "grafana_session=good; grafana_session_expiry=99"
         )
+
+    def test_401_response_is_closed_before_retry(self):
+        save_secret(self.cookie, "grafana_session=old")
+        closed = []
+        original = urllib.error.HTTPError.close
+
+        def spy(error):
+            closed.append(error.code)
+            original(error)
+
+        with mock.patch.object(urllib.error.HTTPError, "close", spy):
+            list(self.transport().fetch("query", {"query": "*"}))
+        self.assertIn(401, closed)
+
+    def test_401_response_is_closed_when_proxy_denies_live_session(self):
+        server = FakeServer(grafana(proxy_denied=True))
+        closed = []
+        original = urllib.error.HTTPError.close
+
+        def spy(error):
+            closed.append(error.code)
+            original(error)
+
+        try:
+            save_secret(self.cookie, GOOD)
+            transport = GrafanaTransport(
+                server.url, "Logs", GrafanaSession(server.url, self.cookie)
+            )
+            with mock.patch.object(urllib.error.HTTPError, "close", spy):
+                with self.assertRaises(CliError):
+                    transport.fetch("query", {"query": "*"})
+        finally:
+            server.close()
+        self.assertEqual(closed, [401, 401])
 
     def test_401_without_rotation_asks_login(self):
         save_secret(self.cookie, "grafana_session=dead")
