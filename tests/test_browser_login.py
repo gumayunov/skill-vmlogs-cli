@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -71,7 +72,13 @@ class BrowserLoginTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def login(self, playwright, refresh_ok=False, which=lambda name: "/usr/bin/" + name):
+    def login(
+        self,
+        playwright,
+        refresh_ok=False,
+        which=lambda name: "/usr/bin/" + name,
+        wall=lambda: 0.0,
+    ):
         clock = FakeClock()
         BrowserLogin(
             FakeSession(self.cookie, refresh_ok),
@@ -80,7 +87,7 @@ class BrowserLoginTest(unittest.TestCase):
             which=which,
             sleep=clock.sleep,
             clock=clock,
-            wall=lambda: 0.0,
+            wall=wall,
             err=self.err,
         ).login()
 
@@ -89,6 +96,37 @@ class BrowserLoginTest(unittest.TestCase):
         self.login(playwright, refresh_ok=True)
         self.assertEqual(playwright.calls, [])
         self.assertFalse(self.cookie.exists())
+
+    def cookies_db(self, mtime):
+        db = self.dir / "chrome-profile" / "Default" / "Network" / "Cookies"
+        db.parent.mkdir(parents=True)
+        db.write_bytes(b"")
+        os.utime(db, (mtime, mtime))
+
+    def test_flush_waits_for_cookie_written_after_login(self):
+        self.cookies_db(500.0)
+        self.login(FakePlaywright("headed"), wall=lambda: 1000.0)
+        self.assertIn("профиль не записал cookie", self.err.getvalue())
+
+    def test_flush_returns_when_profile_written(self):
+        self.cookies_db(2000.0)
+        self.login(FakePlaywright("headed"), wall=lambda: 1000.0)
+        self.assertNotIn("профиль не записал cookie", self.err.getvalue())
+        self.assertEqual(self.cookie.read_text().strip(), GOOD)
+
+    def test_login_moment_is_taken_after_capture(self):
+        playwright = FakePlaywright("headed")
+
+        def wall():
+            playwright.calls.append("wall")
+            return 1000.0
+
+        self.login(playwright, wall=wall)
+        self.assertEqual(playwright.calls.count("wall"), 1)
+        captures = [
+            i for i, args in enumerate(playwright.calls) if args[:2] == ["--raw", "run-code"]
+        ]
+        self.assertGreater(playwright.calls.index("wall"), captures[-1])
 
     def test_missing_playwright(self):
         with self.assertRaisesRegex(CliError, "нужен playwright-cli"):
