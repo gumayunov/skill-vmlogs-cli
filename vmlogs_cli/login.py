@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -103,3 +108,137 @@ class GrafanaSession:
             return False
         save_secret(self.path, fresh)
         return True
+
+
+PW_SESSION = "vmlogs-cli"
+SILENT_TIMEOUT = 20
+LOGIN_TIMEOUT = 300
+FLUSH_TIMEOUT = 45
+PW_INSTALL_HINT = "npm install -g @playwright/cli && playwright-cli install-browser"
+
+
+class BrowserLogin:
+    """Вход в Grafana через SSO в настоящем браузере (playwright-cli) с постоянным профилем.
+
+    Порядок: сохранённая сессия или её продление без браузера → браузер без окна (SSO-сессия
+    в профиле ещё жива) → окно, где вход проходит человек.
+    """
+
+    def __init__(
+        self,
+        session,
+        cfg_dir: Path,
+        run=subprocess.run,
+        which=shutil.which,
+        sleep=time.sleep,
+        clock=time.monotonic,
+        wall=time.time,
+        err=None,
+    ):
+        self.session = session
+        self.profile = cfg_dir / "chrome-profile"
+        self.run = run
+        self.which = which
+        self.sleep = sleep
+        self.clock = clock
+        self.wall = wall
+        self.err = err if err is not None else sys.stderr
+
+    def _say(self, text: str) -> None:
+        print(f"vmlogs-cli: {text}", file=self.err)
+
+    def _pw(self, cwd: str, *args: str) -> subprocess.CompletedProcess:
+        cmd = ["playwright-cli", f"-s={PW_SESSION}", *args]
+        return self.run(cmd, cwd=cwd, capture_output=True, text=True)
+
+    def _open(self, cwd: str, headed: bool) -> None:
+        url = self.session.base_url + "/"
+        args = ["open", *(["--headed"] if headed else []), "--persistent"]
+        proc = self._pw(cwd, *args, "--profile", str(self.profile), url)
+        if proc.returncode != 0:
+            detail = " ".join((proc.stderr or proc.stdout or "").split())[:300]
+            raise CliError(
+                f"playwright-cli не открыл {url}: {detail}\n"
+                "Проверь VPN и браузер: playwright-cli install-browser"
+            )
+
+    def _close(self, cwd: str) -> None:
+        self._pw(cwd, "close")
+
+    def _capture(self, cwd: str) -> Optional[str]:
+        # context.cookies(url) не открывает страниц и сам подбирает cookie родительских доменов.
+        url = json.dumps(self.session.base_url + "/")
+        code = (
+            f"async page => {{ const cs = await page.context().cookies({url}); "
+            "return cs.map(c => c.name + '=' + c.value).join('; '); }"
+        )
+        proc = self._pw(cwd, "--raw", "run-code", code)
+        if proc.returncode != 0:
+            return None
+        try:
+            header = json.loads(proc.stdout.strip())
+        except ValueError:
+            return None
+        # Cookie появляются раньше, чем закончен вход: годится только та, с которой отвечает API.
+        if isinstance(header, str) and self.session.valid(header):
+            return header
+        return None
+
+    def _wait(self, cwd: str, timeout: int) -> Optional[str]:
+        deadline = self.clock() + timeout
+        while self.clock() < deadline:
+            header = self._capture(cwd)
+            if header:
+                return header
+            self.sleep(1)
+        return None
+
+    def _wait_profile_flush(self, since: float) -> None:
+        # Chrome пишет cookie в профиль раз в ~30 с, а закрытие из playwright-cli теряет
+        # несохранённое — и следующий вход снова открыл бы окно.
+        self._say(f"сохраняю сессию в профиле браузера (до {FLUSH_TIMEOUT} с) ...")
+        databases = (
+            self.profile / "Default" / "Cookies",
+            self.profile / "Default" / "Network" / "Cookies",
+        )
+        deadline = self.clock() + FLUSH_TIMEOUT
+        while self.clock() < deadline:
+            if any(db.exists() and db.stat().st_mtime > since for db in databases):
+                return
+            self.sleep(1)
+        self._say("профиль не записал cookie — в следующий раз, возможно, снова откроется окно")
+
+    def login(self) -> None:
+        if self.session.refresh():
+            self._say(
+                f"вход в {self.session.base_url} рабочий: сохранённая сессия жива или продлена"
+            )
+            return
+        if not self.which("playwright-cli"):
+            raise CliError(f"для входа нужен playwright-cli: {PW_INSTALL_HINT}")
+        # playwright-cli складывает служебный каталог .playwright-cli в текущий каталог.
+        with tempfile.TemporaryDirectory() as cwd:
+            self._close(cwd)
+            try:
+                self._open(cwd, headed=False)
+                header = self._wait(cwd, SILENT_TIMEOUT)
+                logged_in_at = None
+                if not header:
+                    self._close(cwd)
+                    minutes = LOGIN_TIMEOUT // 60
+                    self._say(
+                        f"войди в {self.session.base_url} в открывшемся окне (жду до {minutes} минут) ..."
+                    )
+                    logged_in_at = self.wall()
+                    self._open(cwd, headed=True)
+                    header = self._wait(cwd, LOGIN_TIMEOUT)
+                    if not header:
+                        raise CliError(
+                            f"за {minutes} минут вход не завершился — запусти vmlogs-cli login ещё раз"
+                        )
+                save_secret(self.session.path, header)
+                self._say(f"вход сохранён в {self.session.path}")
+                if logged_in_at is not None:
+                    self._wait_profile_flush(logged_in_at)
+            finally:
+                self._close(cwd)
