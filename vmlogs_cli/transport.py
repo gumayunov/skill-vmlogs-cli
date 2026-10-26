@@ -43,6 +43,8 @@ def host_label(url: str) -> str:
     except ValueError:
         port = None
     host = parts.hostname or ""
+    if ":" in host:  # IPv6: urlsplit снимает скобки, а без них порт не отличить
+        host = f"[{host}]"
     return f"{host}:{port}" if port else host
 
 
@@ -57,7 +59,8 @@ def vl_error(code: int, body: str) -> str:
 
 
 def http_error_body(e: urllib.error.HTTPError) -> str:
-    return e.read().decode("utf-8", errors="replace").strip()
+    with e:  # иначе сокет ответа остаётся открытым до сборки мусора
+        return e.read().decode("utf-8", errors="replace").strip()
 
 
 def iter_lines(resp) -> Iterator[str]:
@@ -88,10 +91,18 @@ class DirectTransport:
         try:
             resp = no_redirect_opener().open(req, timeout=self.timeout)
         except urllib.error.HTTPError as e:
+            if 300 <= e.code < 400:
+                where = e.headers.get("Location")
+                e.close()
+                raise CliError(
+                    f"{public_url(self.url)} отвечает {e.code} на {where} — проверь VMLOGS_URL"
+                ) from None
             raise CliError(vl_error(e.code, http_error_body(e))) from None
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             reason = getattr(e, "reason", e)
-            raise CliError(f"{self.url} не ответил ({reason}) — проверь адрес и VPN") from None
+            raise CliError(
+                f"{public_url(self.url)} не ответил ({reason}) — проверь адрес и VPN"
+            ) from None
         return iter_lines(resp)
 
 
@@ -234,13 +245,15 @@ class GrafanaTransport:
             raise CliError(self._explain(e)) from None
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             reason = getattr(e, "reason", e)
-            raise CliError(f"{self.base_url} не ответил ({reason}) — проверь VPN") from None
+            raise CliError(
+                f"{public_url(self.base_url)} не ответил ({reason}) — проверь VPN"
+            ) from None
 
     def _explain(self, e: urllib.error.HTTPError) -> str:
         body = http_error_body(e)
         if 300 <= e.code < 400:
             return (
-                f"{self.base_url} отвечает {e.code} на {e.headers.get('Location')} — "
+                f"{public_url(self.base_url)} отвечает {e.code} на {e.headers.get('Location')} — "
                 "Grafana переехала или просит вход: vmlogs-cli login"
             )
         if e.code == 401:

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from .errors import CliError
-from .transport import host_label, no_redirect_opener
+from .transport import host_label, no_redirect_opener, public_url
 
 
 def cookie_file(cfg_dir: Path, base_url: str) -> Path:
@@ -70,7 +70,7 @@ class GrafanaSession:
     def header(self) -> str:
         header = self.saved()
         if not header:
-            raise CliError(f"нет входа в {self.base_url}: выполни vmlogs-cli login")
+            raise CliError(f"нет входа в {public_url(self.base_url)}: выполни vmlogs-cli login")
         return header
 
     def _call(self, method: str, path: str, header: str):
@@ -229,7 +229,7 @@ class BrowserLogin:
     def login(self) -> None:
         if self.session.refresh():
             self._say(
-                f"вход в {self.session.base_url} рабочий: сохранённая сессия жива или продлена"
+                f"вход в {public_url(self.session.base_url)} рабочий: сохранённая сессия жива или продлена"
             )
             return
         if not self.which("playwright-cli"):
@@ -245,7 +245,7 @@ class BrowserLogin:
                     self._close(cwd)
                     minutes = LOGIN_TIMEOUT // 60
                     self._say(
-                        f"войди в {self.session.base_url} в открывшемся окне (жду до {minutes} минут) ..."
+                        f"войди в {public_url(self.session.base_url)} в открывшемся окне (жду до {minutes} минут) ..."
                     )
                     self._open(cwd, headed=True)
                     header = self._wait(cwd, LOGIN_TIMEOUT)
