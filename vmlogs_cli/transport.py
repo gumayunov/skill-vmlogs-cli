@@ -159,3 +159,74 @@ class KubectlTransport:
         proc = self._run(self.command(endpoint, params, verbose=True))
         match = _K8S_MESSAGE.search(proc.stderr.decode("utf-8", errors="replace"))
         return json.loads(match.group(1)) if match else ""
+
+
+LOGS_DATASOURCE_TYPE = "victoriametrics-logs-datasource"
+
+
+class GrafanaTransport:
+    """VictoriaLogs через прокси датасорса Grafana; вход — cookie сессии (login.GrafanaSession)."""
+
+    def __init__(self, base_url: str, datasource: str, session, timeout: int = DEFAULT_TIMEOUT):
+        self.base_url = base_url.rstrip("/")
+        self.datasource = datasource
+        self.session = session
+        self.timeout = timeout
+        self._uid = None
+
+    def describe(self) -> str:
+        return f"grafana {self.base_url}, датасорс {self.datasource or 'не задан'}"
+
+    def _open(self, path: str, data=None, retry: bool = True):
+        body = urllib.parse.urlencode(data).encode() if data is not None else None
+        req = urllib.request.Request(self.base_url + path, data=body)
+        req.add_header("Cookie", self.session.header())
+        req.add_header("x-grafana-org-id", "1")
+        try:
+            return no_redirect_opener().open(req, timeout=self.timeout)
+        except urllib.error.HTTPError as e:
+            # Сессия Grafana живёт недолго: один раз продлеваем без браузера и повторяем.
+            if e.code == 401 and retry and self.session.refresh():
+                return self._open(path, data, retry=False)
+            raise CliError(self._explain(e)) from None
+        except (urllib.error.URLError, OSError) as e:
+            reason = getattr(e, "reason", e)
+            raise CliError(f"{self.base_url} не ответил ({reason}) — проверь VPN") from None
+
+    def _explain(self, e: urllib.error.HTTPError) -> str:
+        body = http_error_body(e)
+        if 300 <= e.code < 400:
+            return (
+                f"{self.base_url} отвечает {e.code} на {e.headers.get('Location')} — "
+                "Grafana переехала или просит вход: vmlogs-cli login"
+            )
+        if e.code == 401:
+            return f"401 {body[:200]}\nСессия Grafana не продлевается: vmlogs-cli login"
+        return vl_error(e.code, body)
+
+    def datasources(self) -> list[tuple[str, str]]:
+        """(uid, имя) датасорсов VictoriaLogs из /api/frontend/settings."""
+        with self._open("/api/frontend/settings") as resp:
+            settings = json.load(resp)
+        items = settings.get("datasources", {}).values()
+        pairs = ((d["uid"], d["name"]) for d in items if d.get("type") == LOGS_DATASOURCE_TYPE)
+        return sorted(pairs, key=lambda pair: pair[1])
+
+    def uid(self) -> str:
+        if self._uid is None:
+            if not self.datasource:
+                raise CliError(
+                    "не задан датасорс: VMLOGS_DATASOURCE в профиле или --ds; "
+                    "список — vmlogs-cli datasources"
+                )
+            pairs = self.datasources()
+            found = [uid for uid, name in pairs if self.datasource in (uid, name)]
+            if not found:
+                names = ", ".join(name for _, name in pairs) or "ни одного"
+                raise CliError(f"датасорс логов «{self.datasource}» не найден. Есть: {names}")
+            self._uid = found[0]
+        return self._uid
+
+    def fetch(self, endpoint: str, params: dict[str, str]) -> Iterator[str]:
+        path = f"/api/datasources/proxy/uid/{self.uid()}/select/logsql/{endpoint}"
+        return iter_lines(self._open(path, params))
