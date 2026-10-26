@@ -143,8 +143,11 @@ def load_settings(env: Mapping[str, str], cwd, explicit: Optional[str] = None) -
     ):
         _check_url(path, key, values.get(key, ""), example)
     ssh_host = values.get("VMLOGS_SSH_HOST", "")
-    # Хост с «-» ssh принял бы за опцию (-oProxyCommand=… запускает команду).
-    if ssh_host.startswith("-") or any(ch.isspace() for ch in ssh_host):
+    # Хост с «-» ssh принял бы за опцию (-oProxyCommand=… запускает команду). Проверяем
+    # только там, где ssh вообще запускается.
+    if transport == "kubectl" and (
+        ssh_host.startswith("-") or any(ch.isspace() for ch in ssh_host)
+    ):
         raise CliError(
             f"{path}: VMLOGS_SSH_HOST — имя или адрес хоста без пробелов и не с «-», а не «{ssh_host}»"
         )

@@ -51,6 +51,28 @@ class ShortLineTest(unittest.TestCase):
             line, "2026-10-26T07:03:12.345Z api ERROR connection refused⏎retrying  trace_id=ab12"
         )
 
+    def test_lone_cr_is_replaced(self):
+        row = {"_time": "t", "_msg": "a\rb\r\nc\nd"}
+        self.assertEqual(short_line(row, 1000, DEFAULT_HIDE), "t a⏎b⏎c⏎d")
+
+    def test_empty_msg_has_no_trailing_space(self):
+        self.assertEqual(short_line({"_time": "t", "_msg": ""}, 1000, DEFAULT_HIDE), "t")
+
+    def test_non_string_values(self):
+        row = {"_time": "t", "_msg": "m", "code": 500, "extra": {"a": "é"}}
+        self.assertEqual(short_line(row, 1000, DEFAULT_HIDE), 't m  code=500 extra={"a": "é"}')
+
+    def test_width_boundary(self):
+        row = {"_time": "t", "_msg": "xxxx"}  # «t xxxx» — ровно 6 символов
+        self.assertEqual(short_line(row, 6, DEFAULT_HIDE), "t xxxx")
+        self.assertTrue(short_line(row, 5, DEFAULT_HIDE).startswith("t xxx… [truncated: 5/6"))
+
+    def test_context_field_beats_hide_list(self):
+        row = {"_time": "t", "_msg": "m", "_stream": "s", "file": "f"}
+        self.assertEqual(
+            short_line(row, 1000, DEFAULT_HIDE, ["_stream", "file"]), "t m  _stream=s file=f"
+        )
+
     def test_truncation_marker(self):
         self.assertEqual(
             short_line(ROW, 30, DEFAULT_HIDE),
@@ -86,6 +108,15 @@ class SortRecordsTest(unittest.TestCase):
         ]
         self.assertEqual([r["_msg"] for r in sort_records(rows)], ["a", "b", "c"])
 
+    def test_missing_or_non_string_time_goes_first(self):
+        rows = [
+            {"_time": "2026-10-26T11:58:54Z", "_msg": "b"},
+            {"_time": None, "_msg": "n"},
+            {"_time": 5, "_msg": "i"},
+            {"_msg": "m"},
+        ]
+        self.assertEqual([r["_msg"] for r in sort_records(rows)][-1], "b")
+
     def test_stats_rows_keep_order(self):
         rows = [{"c": "2"}, {"c": "1"}]
         self.assertEqual(sort_records(rows), rows)
@@ -98,6 +129,18 @@ class JsonLineTest(unittest.TestCase):
         self.assertEqual(out["trace_id"], "ab12")
         for hidden in ("_stream_id", "_stream", "kubernetes.pod_ip", "kubernetes.pod_labels.app"):
             self.assertNotIn(hidden, out)
+
+    def test_long_non_string_is_cut(self):
+        row = {"_msg": "m", "obj": {"a": "x\x00" * 20}}
+        dumped = json.dumps(row["obj"], ensure_ascii=False).replace("\x00", "")
+        out = json.loads(json_line(row, 10, []))
+        self.assertTrue(out["obj"].startswith(dumped[:10] + "…(+"))
+        self.assertNotIn("\x00", out["obj"])
+        self.assertEqual(out["obj"], f"{dumped[:10]}…(+{len(dumped) - 10})")
+
+    def test_short_non_string_is_kept(self):
+        out = json.loads(json_line({"_msg": "m", "n": 5, "o": {"a": 1}}, 100, []))
+        self.assertEqual((out["n"], out["o"]), (5, {"a": 1}))
 
     def test_width_zero(self):
         self.assertEqual(json.loads(json_line(ROW, 0, []))["_msg"], ROW["_msg"])

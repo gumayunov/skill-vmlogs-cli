@@ -64,7 +64,10 @@ class FakeServer:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # poll_interval по умолчанию 0.5 с: shutdown() ждёт его, и каждый тест терял полсекунды.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
         self.thread.start()
 
     def close(self):

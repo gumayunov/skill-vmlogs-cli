@@ -14,6 +14,8 @@ from .errors import CliError
 _DURATION = re.compile(r"^(\d+)([smhdw])$")
 _UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
 _FRACTION = re.compile(r"\.(\d+)")
+_DATE_SEP = re.compile(r"^\d{4}-\d{2}-\d{2}[Tt ]")
+_ZULU = re.compile(r"[Zz]$")  # только завершающий: «Z» в середине — это ошибка, а не UTC
 
 
 def _fmt(moment: datetime) -> str:
@@ -30,9 +32,12 @@ def parse_point(value: str, now: datetime) -> str:
             raise CliError(f"длительность «{value}» слишком большая") from None
     # Python 3.9 понимает в дробной части секунд только 3 или 6 цифр, VictoriaLogs пишет 9.
     text = _FRACTION.sub(
-        lambda f: "." + f.group(1)[:6].ljust(6, "0"), value.replace("Z", "+00:00"), count=1
+        lambda f: "." + f.group(1)[:6].ljust(6, "0"), _ZULU.sub("+00:00", value), count=1
     )
     try:
+        # fromisoformat принимает любой символ между датой и временем, в том числе «Z».
+        if not _DATE_SEP.match(text):
+            raise ValueError(text)
         moment = datetime.fromisoformat(text)
     except ValueError:
         raise CliError(
@@ -43,8 +48,18 @@ def parse_point(value: str, now: datetime) -> str:
     return _fmt(moment)
 
 
+def _pad(point: str) -> str:
+    """Результат parse_point (всегда с Z) в вид, понятный fromisoformat на Python 3.9."""
+    return point[:-1] + "+00:00"
+
+
 def window(
     since: str, start: Optional[str], end: Optional[str], now: datetime
 ) -> tuple[str, Optional[str]]:
     """(start, end) для API: --start перебивает --since, end — только если задан."""
-    return parse_point(start or since, now), parse_point(end, now) if end else None
+    first = parse_point(start or since, now)
+    last = parse_point(end, now) if end else None
+    # Строки RFC3339 в UTC с одинаковой длиной сравнимы как строки, но доли секунды бывают разной длины.
+    if last and datetime.fromisoformat(_pad(first)) > datetime.fromisoformat(_pad(last)):
+        raise CliError(f"начало окна позже конца: {first} > {last}")
+    return first, last
