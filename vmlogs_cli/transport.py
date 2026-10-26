@@ -241,15 +241,17 @@ class GrafanaTransport:
         except urllib.error.HTTPError as e:
             # Сессия Grafana живёт недолго: один раз продлеваем без браузера и повторяем.
             if e.code == 401 and retry and self.session.refresh():
+                e.close()
                 return self._open(path, data, retry=False)
-            if e.code == 401 and not retry and "/api/datasources/proxy/" in path:
-                # Повтор после живой сессии тоже 401: дело не во входе, а в правах на датасорс.
-                if self.session.valid(self.session.header()):
-                    raise CliError(
-                        f"Grafana отказала в доступе к датасорсу «{self.datasource}» (401), "
-                        "хотя сессия жива — проверь права на датасорс"
-                    ) from None
-            raise CliError(self._explain(e)) from None
+            with e:
+                if e.code == 401 and not retry and "/api/datasources/proxy/" in path:
+                    # Повтор после живой сессии тоже 401: дело не во входе, а в правах на датасорс.
+                    if self.session.valid(self.session.header()):
+                        raise CliError(
+                            f"Grafana отказала в доступе к датасорсу «{self.datasource}» (401), "
+                            "хотя сессия жива — проверь права на датасорс"
+                        ) from None
+                raise CliError(self._explain(e)) from None
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             reason = getattr(e, "reason", e)
             raise CliError(
