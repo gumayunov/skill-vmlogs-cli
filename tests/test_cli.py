@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -91,6 +92,22 @@ class CliTest(unittest.TestCase):
         self.assertIn(f"2 строк → {target}", out)
         self.assertIn("поля: _msg, _time, kubernetes.container_name, level", out)
 
+    def test_out_file_unwritable(self):
+        code, _, err = self.cli("query", "*", "--out", str(self.dir / "missing" / "x.jsonl"))
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("vmlogs-cli: не удалось записать"), err)
+        self.assertNotIn("Traceback", err)
+
+    def test_unexpected_json_shape(self):
+        shaped = FakeServer(lambda *args: (200, [], "[1, 2]"))
+        self.addCleanup(shaped.close)
+        profile = self.dir / "shaped-env"
+        profile.write_text(f"VMLOGS_TRANSPORT=direct\nVMLOGS_URL={shaped.url}\n")
+        code, _, err = self.cli("fields", "*", "--env", str(profile))
+        self.assertEqual(code, 1)
+        self.assertIn("ответ не похож на ответ VictoriaLogs", err)
+        self.assertNotIn("Traceback", err)
+
     def test_bad_query(self):
         code, _, err = self.cli("query", "x | bad(")
         self.assertEqual(code, 1)
@@ -144,11 +161,27 @@ class CliTest(unittest.TestCase):
         self.assertIn("нет профиля", err)
 
     def test_options_after_command(self):
-        code, _, _ = self.cli("query", "*", "--env", str(self.profile), "--timeout", "5")
+        code, _, _ = self.cli(
+            "query", "*", "--env", str(self.profile), "--timeout", "5", "--since", "2h"
+        )
         self.assertEqual(code, 0)
+        self.assertEqual(self.last_params()["start"], "2026-10-26T10:00:00Z")
 
 
 class BinTest(unittest.TestCase):
+    def test_runs_through_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "vmlogs-cli"
+            os.symlink(ROOT / "bin" / "vmlogs-cli", link)
+            proc = subprocess.run(
+                [sys.executable, str(link), "--version"],
+                capture_output=True,
+                text=True,
+                cwd="/",
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), f"vmlogs-cli {__version__}")
+
     def test_runs_without_install(self):
         proc = subprocess.run(
             [sys.executable, str(ROOT / "bin" / "vmlogs-cli"), "--version"],
