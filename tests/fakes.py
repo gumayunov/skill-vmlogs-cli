@@ -123,7 +123,7 @@ GOOD = "grafana_session=good"
 LOGS_UID = "logs-uid"
 
 
-def grafana(redirect=False):
+def grafana(redirect=False, proxy_denied=False):
     """Поддельная Grafana: вход по cookie GOOD, ротация из grafana_session=old, прокси датасорса."""
     vl = victorialogs(prefix=f"/api/datasources/proxy/uid/{LOGS_UID}")
     unauthorized = (401, [], '{"message":"Unauthorized"}')
@@ -157,6 +157,8 @@ def grafana(redirect=False):
                 "Metrics": {"uid": "vm-uid", "name": "Metrics", "type": "prometheus"},
             }
             return 200, [], json.dumps({"datasources": datasources})
+        if proxy_denied and path.startswith("/api/datasources/proxy/"):
+            return unauthorized  # сессия жива, а прав на датасорс нет
         return vl(method, path, params, headers)
 
     return handle
