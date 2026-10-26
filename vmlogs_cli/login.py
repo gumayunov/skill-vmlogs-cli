@@ -41,6 +41,7 @@ def merge_cookies(header: str, set_cookies: list[str]) -> str:
 def save_secret(path: Path, text: str) -> None:
     """Атомарная запись с правами 600: клиент не прочтёт половину, чужие не прочтут вовсе."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)  # mkdir не трогает права уже существующего каталога
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -71,6 +72,9 @@ class GrafanaSession:
         header = self.saved()
         if not header:
             raise CliError(f"нет входа в {public_url(self.base_url)}: выполни vmlogs-cli login")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in header):
+            # Перевод строки в Cookie urllib отвергает с невнятной ошибкой.
+            raise CliError(f"cookie-файл {self.path} повреждён: выполни vmlogs-cli login")
         return header
 
     def _call(self, method: str, path: str, header: str):
@@ -89,11 +93,16 @@ class GrafanaSession:
     def valid(self, header: str) -> bool:
         return bool(header) and self._call("GET", "/api/user", header)[0] == 200
 
+    def _unreachable(self) -> CliError:
+        return CliError(
+            f"{public_url(self.base_url)} не ответил при продлении сессии — проверь VPN"
+        )
+
     def rotate(self, header: str) -> Optional[str]:
         """Новый заголовок после ротации токена сессии или None, если Grafana не продлила."""
-        _, headers = self._call("POST", "/api/user/auth-tokens/rotate", header)
-        if headers is None:
-            return None
+        status, headers = self._call("POST", "/api/user/auth-tokens/rotate", header)
+        if status == 0:
+            raise self._unreachable()
         fresh = merge_cookies(header, headers.get_all("Set-Cookie") or [])
         return fresh if self.valid(fresh) else None
 
@@ -102,8 +111,11 @@ class GrafanaSession:
         header = self.saved()
         if not header:
             return False
-        if self.valid(header):
+        status = self._call("GET", "/api/user", header)[0]
+        if status == 200:
             return True
+        if status == 0:  # сеть, а не протухшая сессия: login не поможет
+            raise self._unreachable()
         fresh = self.rotate(header)
         if not fresh:
             return False

@@ -2,6 +2,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.fakes import GOOD, FakeServer, grafana, no_proxy_env
 from vmlogs_cli.errors import CliError
@@ -42,6 +43,14 @@ class CookieHelpersTest(unittest.TestCase):
             save_secret(path, "a=1")
             self.assertEqual(path.read_text(), "a=1\n")
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_save_secret_tightens_existing_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "cookies" / "host"
+            path.parent.mkdir()
+            path.parent.chmod(0o755)
+            save_secret(path, "a=1")
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
 
 
 class GrafanaTransportTest(unittest.TestCase):
@@ -122,6 +131,37 @@ class GrafanaTransportTest(unittest.TestCase):
             session.header()
         self.assertNotIn("u:p", str(ctx.exception))
 
+    def test_401_on_proxy_with_live_session_blames_datasource(self):
+        server = FakeServer(grafana(proxy_denied=True))
+        try:
+            save_secret(self.cookie, GOOD)
+            transport = GrafanaTransport(
+                server.url, "Logs", GrafanaSession(server.url, self.cookie)
+            )
+            with self.assertRaisesRegex(
+                CliError,
+                r"Grafana отказала в доступе к датасорсу «Logs» \(401\), хотя сессия жива — "
+                "проверь права на датасорс",
+            ):
+                transport.fetch("query", {"query": "*"})
+        finally:
+            server.close()
+
+    def test_network_failure_on_refresh_says_vpn_not_login(self):
+        save_secret(self.cookie, GOOD)
+        # Прокси отвечает 401, а продление (/api/user) уже не достаёт до Grafana.
+        server = FakeServer(grafana(proxy_denied=True))
+        try:
+            session = GrafanaSession(server.url, self.cookie)
+            transport = GrafanaTransport(server.url, "Logs", session)
+            with mock.patch.object(session, "_call", return_value=(0, None)):
+                with self.assertRaisesRegex(
+                    CliError, f"{server.url} не ответил при продлении сессии — проверь VPN"
+                ):
+                    transport.fetch("query", {"query": "*"})
+        finally:
+            server.close()
+
     def test_redirect_reports_location(self):
         server = FakeServer(grafana(redirect=True))
         try:
@@ -150,6 +190,22 @@ class GrafanaSessionTest(unittest.TestCase):
         save_secret(self.cookie, GOOD)
         self.assertTrue(self.session.refresh())
         self.assertEqual(self.cookie.read_text().strip(), GOOD)
+
+    def test_refresh_network_failure_is_cli_error(self):
+        session = GrafanaSession("http://u:p@127.0.0.1:9", self.cookie, timeout=2)
+        save_secret(self.cookie, GOOD)
+        with no_proxy_env(), self.assertRaises(CliError) as ctx:
+            session.refresh()
+        self.assertEqual(
+            str(ctx.exception), "http://127.0.0.1:9 не ответил при продлении сессии — проверь VPN"
+        )
+
+    def test_header_rejects_control_characters(self):
+        self.cookie.write_text("grafana_session=a\nb=c\n")
+        with self.assertRaisesRegex(
+            CliError, f"cookie-файл {self.cookie} повреждён: выполни vmlogs-cli login"
+        ):
+            self.session.header()
 
     def test_refresh_without_file(self):
         self.assertFalse(self.session.refresh())
