@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import re
 import sys
+import tempfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, TextIO, Union
 
 from . import __version__
 from .config import Settings, config_dir, load_settings
@@ -30,12 +33,36 @@ EPILOG = """примеры:
 """
 
 
+# Union, а не «|»: псевдоним вычисляется при импорте, а на 3.9 «|» для классов не работает.
+AnyTransport = Union[DirectTransport, KubectlTransport, GrafanaTransport]  # noqa: UP007
+STREAM_ID = re.compile(r"[0-9a-f]+")
+MOMENT = re.compile(r"\d{4}-\d{2}-\d{2}T[0-9:.]+Z")
+
+
+def _int_at_least(minimum: int):
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            value = None
+        if value is None or value < minimum:
+            raise argparse.ArgumentTypeError(
+                f"должно быть целое не меньше {minimum}, а не «{text}»"
+            )
+        return value
+
+    return parse
+
+
 def build_parser() -> argparse.ArgumentParser:
     conn = argparse.ArgumentParser(add_help=False)
     conn.add_argument("--env", help="файл профиля вместо поиска")
     conn.add_argument("--ds", help="датасорс Grafana (имя или uid) вместо VMLOGS_DATASOURCE")
     conn.add_argument(
-        "--timeout", type=int, default=DEFAULT_TIMEOUT, help="секунд на запрос (%(default)s)"
+        "--timeout",
+        type=_int_at_least(1),
+        default=DEFAULT_TIMEOUT,
+        help="секунд на запрос (%(default)s)",
     )
 
     win = argparse.ArgumentParser(add_help=False)
@@ -58,12 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
     query = sub.add_parser("query", parents=[conn, win], help="строки логов или результат | stats")
     query.add_argument("logsql")
     query.add_argument(
-        "--limit", type=int, default=50, help="максимум строк, последних по времени (%(default)s)"
+        "--limit",
+        type=_int_at_least(1),
+        default=50,
+        help="максимум строк, последних по времени (%(default)s)",
     )
     query.add_argument("-o", "--output", choices=("short", "json"), default="short")
     query.add_argument(
         "--width",
-        type=int,
+        type=_int_at_least(0),
         default=1000,
         help="обрезать строку (short) или значение (json) длиннее N символов; 0 — не обрезать",
     )
@@ -75,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     values = sub.add_parser("values", parents=[conn, win], help="значения поля с числом строк")
     values.add_argument("logsql")
     values.add_argument("field")
-    values.add_argument("--limit", type=int, default=50)
+    values.add_argument("--limit", type=_int_at_least(1), default=50)
 
     get = sub.add_parser(
         "get", parents=[conn], help="одна запись целиком по ссылке из маркера обрезки"
@@ -88,7 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def make_transport(settings: Settings, ds: Optional[str], timeout: int, env: Mapping[str, str]):
+def make_transport(
+    settings: Settings, ds: Optional[str], timeout: int, env: Mapping[str, str]
+) -> AnyTransport:
     if settings.transport == "direct":
         return DirectTransport(settings.url, timeout)
     if settings.transport == "kubectl":
@@ -106,7 +138,16 @@ def make_transport(settings: Settings, ds: Optional[str], timeout: int, env: Map
 
 
 class App:
-    def __init__(self, args, settings: Settings, transport, env, now: datetime, out, err):
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        settings: Settings,
+        transport: AnyTransport,
+        env: Mapping[str, str],
+        now: datetime,
+        out: TextIO,
+        err: TextIO,
+    ):
         self.args = args
         self.settings = settings
         self.transport = transport
@@ -138,20 +179,45 @@ class App:
     def _json(self, endpoint: str, params: dict[str, str]) -> dict:
         return json.loads("".join(self.transport.fetch(endpoint, params)))
 
+    def _write_out(self, lines) -> tuple[int, set, bool]:
+        """Строки в файл через временный файл рядом: при сбое прежний файл остаётся нетронутым."""
+        target = self.args.out
+        count, names, has_msg = 0, set(), False
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.dirname(os.path.abspath(target)), prefix=".vmlogs-cli-", suffix=".tmp"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                for line in lines:
+                    fh.write(line + "\n")
+                    row = json.loads(line)
+                    names.update(row)
+                    has_msg = has_msg or "_msg" in row
+                    count += 1
+            try:
+                mode = os.stat(target).st_mode & 0o777
+            except FileNotFoundError:
+                mask = os.umask(0)
+                os.umask(mask)
+                mode = 0o666 & ~mask
+            os.chmod(tmp, mode)
+            os.replace(tmp, target)
+            tmp = None
+        except OSError as e:
+            raise CliError(f"не удалось записать {target}: {e.strerror or e}") from None
+        finally:
+            if tmp is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(tmp)
+        return count, names, has_msg
+
     def query(self) -> None:
         a = self.args
         params = {**self._params(a.logsql), "limit": str(a.limit)}
         lines = self.transport.fetch("query", params)
         if a.out:
-            count, names = 0, set()
-            try:
-                with open(a.out, "w", encoding="utf-8") as fh:
-                    for line in lines:
-                        fh.write(line + "\n")
-                        names.update(json.loads(line))
-                        count += 1
-            except OSError as e:
-                raise CliError(f"не удалось записать {a.out}: {e.strerror or e}") from None
+            count, names, has_msg = self._write_out(lines)
             self._print(f"{count} строк → {a.out}")
             self._print(
                 "поля: " + ", ".join(sorted(n for n in names if not is_hidden(n, self.hide)))
@@ -159,6 +225,7 @@ class App:
         else:
             rows = [json.loads(line) for line in lines]
             count = len(rows)
+            has_msg = any("_msg" in row for row in rows)
             if a.output == "short":
                 for row in sort_records(rows):
                     self._print(short_line(row, a.width, self.hide, self.context))
@@ -171,16 +238,30 @@ class App:
                 'bulk_operations — нужен bulk* или ~"bulk"; проверь и окно (--since, --start)'
             )
         elif count >= a.limit:
-            self._hint(
-                f"показаны последние {a.limit} строк окна — есть ещё: сузь запрос "
-                "или посчитай через | stats count()"
-            )
+            if not has_msg:
+                self._hint(
+                    f"показано {a.limit} строк результата — возможно, есть ещё: "
+                    "подними --limit или добавь | sort … | limit"
+                )
+            elif a.out:
+                self._hint(
+                    f"записаны последние {a.limit} строк окна — есть ещё: сузь запрос "
+                    "или посчитай через | stats count()"
+                )
+            else:
+                self._hint(
+                    f"показаны последние {a.limit} строк окна — есть ещё: сузь запрос "
+                    "или посчитай через | stats count()"
+                )
 
     def fields(self) -> None:
-        data = self._json("field_names", self._params(self.args.logsql))
+        params = self._params(self.args.logsql)
+        data = self._json("field_names", params)
         lines, hidden = field_lines(data.get("values", []), self.hide)
         for line in lines:
             self._print(line)
+        if not data.get("values"):
+            self._hint(f"0 полей за окно с {params['start']} — проверь фильтр и окно")
         if hidden:
             self._hint(f"скрыто служебных полей: {hidden} (--all-fields покажет)")
 
@@ -190,13 +271,15 @@ class App:
         values = self._json("field_values", params).get("values", [])
         for item in values:
             self._print(f"{item['hits']}\t{item['value']}")
+        if not values:
+            self._hint(f"0 значений за окно с {params['start']} — проверь фильтр и окно")
         if len(values) >= a.limit:
-            self._hint(f"показаны {a.limit} значений — есть ещё: подними --limit")
+            self._hint(f"показано {a.limit} значений — есть ещё: подними --limit")
 
     def get(self) -> None:
         ref = self.args.ref
         stream_id, sep, moment = ref.partition("/")
-        if not (sep and stream_id and moment):
+        if not (STREAM_ID.fullmatch(stream_id) and sep and MOMENT.fullmatch(moment)):
             raise CliError(f"ссылка «{ref}» не похожа на <stream_id>/<time> из маркера обрезки")
         query = f"_stream_id:{stream_id} _time:[{moment}, {moment}]"
         lines = self.transport.fetch("query", {"query": query, "limit": "10"})

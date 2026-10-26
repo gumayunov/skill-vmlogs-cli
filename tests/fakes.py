@@ -11,14 +11,14 @@ from unittest import mock
 RECORDS = [
     {
         "_time": "2026-10-26T07:03:14Z",
-        "_stream_id": "s1",
+        "_stream_id": "0a1b",
         "_msg": "second",
         "kubernetes.container_name": "api",
         "level": "info",
     },
     {
         "_time": "2026-10-26T07:03:12Z",
-        "_stream_id": "s1",
+        "_stream_id": "0a1b",
         "_msg": "first",
         "kubernetes.container_name": "api",
         "level": "error",
@@ -104,6 +104,8 @@ def victorialogs(prefix=""):
             else:
                 rows = RECORDS[: int(params.get("limit", "1000"))]
             return 200, [], "".join(json.dumps(row) + "\n" for row in rows)
+        if endpoint in ("field_names", "field_values") and "nothing" in query:
+            return 200, [], json.dumps({"values": []})
         if endpoint == "field_names":
             values = [
                 {"value": "_msg", "hits": 2},
