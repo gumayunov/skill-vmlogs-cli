@@ -179,38 +179,48 @@ class App:
     def _json(self, endpoint: str, params: dict[str, str]) -> dict:
         return json.loads("".join(self.transport.fetch(endpoint, params)))
 
-    def _write_out(self, lines) -> tuple[int, set, bool]:
-        """Строки в файл через временный файл рядом: при сбое прежний файл остаётся нетронутым."""
-        target = self.args.out
+    @staticmethod
+    def _dump(fh, lines) -> tuple[int, set, bool]:
         count, names, has_msg = 0, set(), False
-        tmp = None
-        try:
-            fd, tmp = tempfile.mkstemp(
-                dir=os.path.dirname(os.path.abspath(target)), prefix=".vmlogs-cli-", suffix=".tmp"
-            )
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                for line in lines:
-                    fh.write(line + "\n")
-                    row = json.loads(line)
-                    names.update(row)
-                    has_msg = has_msg or "_msg" in row
-                    count += 1
-            try:
-                mode = os.stat(target).st_mode & 0o777
-            except FileNotFoundError:
-                mask = os.umask(0)
-                os.umask(mask)
-                mode = 0o666 & ~mask
-            os.chmod(tmp, mode)
-            os.replace(tmp, target)
-            tmp = None
-        except OSError as e:
-            raise CliError(f"не удалось записать {target}: {e.strerror or e}") from None
-        finally:
-            if tmp is not None:
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(tmp)
+        for line in lines:
+            fh.write(line + "\n")
+            row = json.loads(line)
+            names.update(row)
+            has_msg = has_msg or "_msg" in row
+            count += 1
         return count, names, has_msg
+
+    def _write_out(self, lines) -> tuple[int, set, bool]:
+        """Строки в файл. Симлинк разворачивается в цель; не-обычный файл (/dev/null, FIFO)
+        пишется напрямую. Обычный файл — через временный файл рядом: при сбое он остаётся нетронутым."""
+        target = os.path.realpath(self.args.out)
+        try:
+            if os.path.exists(target) and not os.path.isfile(target):
+                with open(target, "w", encoding="utf-8") as fh:
+                    return self._dump(fh, lines)
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(
+                    dir=os.path.dirname(target), prefix=".vmlogs-cli-", suffix=".tmp"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    result = self._dump(fh, lines)
+                try:
+                    mode = os.stat(target).st_mode & 0o777
+                except FileNotFoundError:
+                    mask = os.umask(0)
+                    os.umask(mask)
+                    mode = 0o666 & ~mask
+                os.chmod(tmp, mode)
+                os.replace(tmp, target)
+                tmp = None
+                return result
+            finally:
+                if tmp is not None:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(tmp)
+        except OSError as e:
+            raise CliError(f"не удалось записать {self.args.out}: {e.strerror or e}") from None
 
     def query(self) -> None:
         a = self.args
