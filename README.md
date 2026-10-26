@@ -72,6 +72,17 @@ VMLOGS_HIDE_FIELDS=_stream,_stream_id,k8s.pod_labels.   # скрытые пол�
 VMLOGS_CONTEXT_FIELDS=kubernetes.pod_name,trace_id      # какие поля печатать после сообщения
 ```
 
+`VMLOGS_HIDE_FIELDS` **заменяет** список по умолчанию, а не дополняет его. По умолчанию
+скрыты: `_stream`, `_stream_id`, `kubernetes.pod_labels.`, `kubernetes.pod_annotations.`,
+`kubernetes.container_id`, `kubernetes.pod_ip`, `kubernetes.pod_node_name`, `k8s.pod_labels.`,
+`k8s.pod_annotations.`, `k8s.pod_ip`, `k8s.pod_node_name`, `k8s.pod_owner`, `vector.`,
+`source_type`, `file`, `offset`, `partition`, `topic`, `@timestamp_end`. Поля `file`, `topic`,
+`partition`, `offset` скрываются по точному имени и могут скрыть одноимённые поля приложения —
+тогда задай свой список. Показать всё разово — `--all-fields`.
+
+Каталог `.vmlogs-cli/` — доверенная конфигурация, как `.envrc`: профиль запускает ssh и
+kubectl, пресеты — скрипты. Не запускай vmlogs-cli в чужих непроверенных клонах.
+
 Проверка: `vmlogs-cli check`.
 
 ## Вход в Grafana

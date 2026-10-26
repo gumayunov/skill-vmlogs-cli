@@ -9,7 +9,7 @@ description: Use when нужно посмотреть логи в VictoriaLogs �
 Команда — `vmlogs-cli`; если её нет в PATH — `bin/vmlogs-cli` в каталоге этого скила.
 
 Куда ходить, задаёт профиль — env-файл без секретов. Первый найденный побеждает:
-`$VMLOGS_ENV` → `.vmlogs-cli/env` вверх от текущего каталога → `~/.config/vmlogs-cli/env`.
+`--env <файл>` → `$VMLOGS_ENV` → `.vmlogs-cli/env` вверх от текущего каталога → `~/.config/vmlogs-cli/env`.
 Профиля нет (`нет профиля`) — попроси пользователя создать его по `README.md` рядом.
 
 ## Порядок работы
@@ -25,7 +25,7 @@ description: Use when нужно посмотреть логи в VictoriaLogs �
    ```
 3. Если строк не больше сотни — вывести их:
    ```bash
-   vmlogs-cli query '<фильтр>' --since 1h
+   vmlogs-cli query '<фильтр>' --since 1h --limit 100
    ```
    Больше — сузить фильтр или окно, разложить через `| stats by (<поле>) count()`, или
    выгрузить `--limit 5000 --out /tmp/<имя>.jsonl` и разбирать файл скриптом.
@@ -76,9 +76,10 @@ vmlogs-cli values '<фильтр>' level --since 1h    # значения пол
 
 `short` (по умолчанию): `<время> <контейнер> <УРОВЕНЬ> <сообщение>  k=v …`, записи по
 возрастанию времени, переводы строк — `⏎`. Строки `| stats` — `k=v`. `-o json` — JSONL в
-порядке VictoriaLogs (от новых к старым).
+порядке VictoriaLogs (от новых к старым); с `-o json` поле `_stream_id` скрыто — для `get`
+добавь `--all-fields`.
 
-Маркеры:
+Маркеры и подсказки `[...]` печатаются в stderr — не отбрасывай его (`2>/dev/null`):
 
 - `… [truncated: N/M chars, get <stream_id>/<time>]` — строка обрезана до `--width` (1000
   символов). Полная запись: `vmlogs-cli get <stream_id>/<time>`. Формат маркера — контракт,
