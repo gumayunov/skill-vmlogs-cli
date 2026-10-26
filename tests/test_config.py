@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from vmlogs_cli.config import config_dir, find_env_file, load_settings, parse_env_file
 from vmlogs_cli.errors import CliError
@@ -44,6 +46,22 @@ class FindEnvFileTest(unittest.TestCase):
         chosen = write(self.root / "b.env", "")
         self.assertEqual(find_env_file(self.env, self.project, str(chosen)), chosen)
 
+    def test_tilde_in_explicit(self):
+        chosen = write(self.home / "my.env", "")
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            self.assertEqual(find_env_file(self.env, self.project, "~/my.env"), chosen)
+
+    def test_tilde_in_vmlogs_env(self):
+        chosen = write(self.home / "my.env", "")
+        self.env["VMLOGS_ENV"] = "~/my.env"
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            self.assertEqual(find_env_file(self.env, self.project), chosen)
+
+    def test_empty_vmlogs_env_is_unset(self):
+        expected = write(self.root / "work" / ".vmlogs-cli" / "env", "")
+        self.env["VMLOGS_ENV"] = ""
+        self.assertEqual(find_env_file(self.env, self.project), expected)
+
     def test_missing_explicit_is_error(self):
         with self.assertRaisesRegex(CliError, "не найден"):
             find_env_file(self.env, self.project, str(self.root / "nope.env"))
@@ -69,6 +87,11 @@ class ParseEnvFileTest(unittest.TestCase):
                     "VMLOGS_HIDE_FIELDS": "a, b.",
                 },
             )
+
+    def test_duplicate_key_last_wins(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write(Path(d) / "env", "VMLOGS_URL=http://a\nVMLOGS_URL=http://b\n")
+            self.assertEqual(parse_env_file(path), {"VMLOGS_URL": "http://b"})
 
     def test_line_without_equals_is_error(self):
         with tempfile.TemporaryDirectory() as d:
@@ -138,6 +161,10 @@ class LoadSettingsTest(unittest.TestCase):
                 "VMLOGS_TRANSPORT=kubectl\nVMLOGS_KUBE_SERVICE=monitoring/vl:9428\n"
                 "VMLOGS_SSH_HOST=box id\n"
             )
+
+    def test_ssh_host_not_checked_for_other_transports(self):
+        s = self.load("VMLOGS_TRANSPORT=direct\nVMLOGS_URL=http://vl:9428\nVMLOGS_SSH_HOST=-x y\n")
+        self.assertEqual(s.transport, "direct")
 
     def test_bad_transport(self):
         with self.assertRaisesRegex(CliError, "VMLOGS_TRANSPORT должен быть"):

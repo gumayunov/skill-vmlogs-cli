@@ -45,7 +45,7 @@ def is_record(row: dict) -> bool:
 
 def _flat(value) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    return text.replace("\x00", "").replace("\r\n", "⏎").replace("\n", "⏎")
+    return text.replace("\x00", "").replace("\r\n", "⏎").replace("\r", "⏎").replace("\n", "⏎")
 
 
 def _first(row: dict, names: Sequence[str]) -> tuple[Optional[str], str]:
@@ -58,7 +58,9 @@ def _first(row: dict, names: Sequence[str]) -> tuple[Optional[str], str]:
 
 def _time_key(row: dict) -> tuple[str, str]:
     # Дробная часть разной длины: «…:54Z» раньше «…:54.1Z», а сравнение строк говорит обратное.
-    moment = row.get("_time", "")
+    moment = row.get("_time")
+    if not isinstance(moment, str):
+        return "", ""  # без времени — в начало
     return moment[:19], moment[19:].lstrip(".").rstrip("Z").ljust(9, "0")
 
 
@@ -96,7 +98,7 @@ def short_line(
             key=lambda kv: kv[0],
         )
     head = [part for part in (_flat(row.get("_time", "")), container, level.upper()) if part]
-    line = " ".join([*head, _flat(row["_msg"])])
+    line = " ".join([*head, *filter(None, [_flat(row["_msg"])])])
     if tail:
         line += "  " + " ".join(f"{key}={_flat(value)}" for key, value in tail)
     ref = (
@@ -115,6 +117,11 @@ def json_line(row: dict, width: int, hide: Sequence[str]) -> str:
             value = value.replace("\x00", "")
             if width and len(value) > width:
                 value = f"{value[:width]}…(+{len(value) - width})"
+        elif isinstance(value, (dict, list)):
+            # Вложенное значение режем по сериализации: иначе один объект раздувает вывод.
+            dumped = json.dumps(value, ensure_ascii=False).replace("\x00", "")
+            if width and len(dumped) > width:
+                value = f"{dumped[:width]}…(+{len(dumped) - width})"
         out[key] = value
     return json.dumps(out, ensure_ascii=False)
 

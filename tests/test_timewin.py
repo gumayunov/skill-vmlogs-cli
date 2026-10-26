@@ -34,6 +34,14 @@ class ParsePointTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(CliError):
                 parse_point(bad, NOW)
 
+    def test_z_only_at_the_end(self):
+        # Раньше заменялись все «Z», и «2026-10-26Z07…» превращалось в валидную дату.
+        with self.assertRaises(CliError):
+            parse_point("2026-10-26Z07:03:12Z", NOW)
+
+    def test_lowercase_z(self):
+        self.assertEqual(parse_point("2026-10-26T07:03:12z", NOW), "2026-10-26T07:03:12Z")
+
 
 class WindowTest(unittest.TestCase):
     def test_since(self):
@@ -44,6 +52,16 @@ class WindowTest(unittest.TestCase):
             window("1h", "2026-10-26T07:00:00Z", "30m", NOW),
             ("2026-10-26T07:00:00Z", "2026-10-26T11:30:00Z"),
         )
+
+    def test_start_after_end(self):
+        with self.assertRaisesRegex(
+            CliError, "начало окна позже конца: 2026-10-26T11:00:00Z > 2026-10-26T10:00:00Z"
+        ):
+            window("1h", "2026-10-26T11:00:00Z", "2026-10-26T10:00:00Z", NOW)
+
+    def test_since_after_end(self):
+        with self.assertRaisesRegex(CliError, "начало окна позже конца"):
+            window("1h", None, "2h", NOW)
 
 
 if __name__ == "__main__":
