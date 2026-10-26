@@ -117,6 +117,22 @@ class CliTest(unittest.TestCase):
         self.assertEqual(target.read_text(), "old\n")
         self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["env", "rows.jsonl"])
 
+    def test_out_through_symlink_writes_target(self):
+        real = self.dir / "real.jsonl"
+        link = self.dir / "link.jsonl"
+        real.write_text("old\n")
+        os.symlink(real, link)
+        code, out, _ = self.cli("query", "*", "--out", str(link))
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(len(real.read_text().splitlines()), 2)
+        self.assertIn(f"2 строк → {link}", out)
+
+    def test_out_to_devnull(self):
+        code, out, err = self.cli("query", "*", "--out", os.devnull)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(f"2 строк → {os.devnull}", out)
+
     def test_out_limit_hint(self):
         target = self.dir / "rows.jsonl"
         _, _, err = self.cli("query", "*", "--limit", "2", "--out", str(target))
