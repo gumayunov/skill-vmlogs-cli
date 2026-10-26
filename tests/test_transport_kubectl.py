@@ -12,6 +12,37 @@ from vmlogs_cli.transport import KubectlTransport
 
 SERVICE_PATH = "/api/v1/namespaces/monitoring/services/vl:9428/proxy/select/logsql"
 
+KUBECTL_V8_BAD_REQUEST = "\n".join(
+    [
+        "I1026 17:29:04.596794 1 loader.go:402] Config loaded from file:  /etc/kubeconfig",
+        'I1026 17:29:04.602004 1 round_trippers.go:632] "Response" status="400 Bad Request" headers=<',
+        "\tContent-Type: text/plain; charset=utf-8",
+        "\tX-Server-Hostname: vl-0",
+        " > milliseconds=4",
+        'I1026 17:29:04.602030 1 get.go:174] "Response Body" body=<',
+        '\tcannot parse `query` arg [foo | bad(]: unexpected pipe name "bad"; '
+        "probably, 'filter' is missing in front of \"bad\"; context: [foo | bad]",
+        " >",
+        "I1026 17:29:04.602099 1 helpers.go:246] server response object: %s[{",
+        '  "status": "Failure",',
+        '  "message": "the server rejected our request for an unknown reason",',
+        '  "reason": "BadRequest",',
+        '  "details": {',
+        '    "causes": [',
+        "      {",
+        '        "reason": "UnexpectedServerResponse",',
+        '        "message": "cannot parse `query` arg [foo | bad(]: unexpected pipe name '
+        '\\"bad\\"; context: [foo | bad]"',
+        "      }",
+        "    ]",
+        "  },",
+        '  "code": 400',
+        "}]",
+        "Error from server (BadRequest): the server rejected our request for an unknown reason",
+        "",
+    ]
+)
+
 
 class FakeRun:
     """Вместо subprocess.run: отдаёт заготовленные (код, stdout, stderr) по очереди."""
@@ -82,11 +113,38 @@ class KubectlFetchTest(unittest.TestCase):
         self.assertIs(run.kwargs[0]["stdin"], subprocess.DEVNULL)
 
     def test_bad_request_message_from_verbose_rerun(self):
-        verbose = (
-            'I1026 get.go:174] "Response Body" body=<\n'
-            "\tcannot parse ...\n"
-            '        "message": "cannot parse `query` arg [x | bad(]: unexpected pipe name '
-            '\\"bad\\"; context: [x | bad]"\n'
+        # Структура реального вывода `kubectl get --raw … -v=8` (хосты и пути обезличены).
+        run = FakeRun(
+            (1, "", "Error from server (BadRequest): the server rejected our request\n"),
+            (1, "", KUBECTL_V8_BAD_REQUEST),
+        )
+        transport = KubectlTransport("monitoring/vl:9428", run=run)
+        with self.assertRaises(CliError) as ctx:
+            transport.fetch("query", {"query": "foo | bad("})
+        text = str(ctx.exception)
+        self.assertIn("cannot parse `query` arg", text)
+        self.assertNotIn("rejected our request", text)
+        self.assertEqual(run.calls[1][:2], ["kubectl", "-v=8"])
+
+    def test_bad_request_message_fallback_last_message(self):
+        # Без блока Response Body берём последнее "message": общее сообщение Status идёт первым.
+        verbose = "\n".join(
+            [
+                "I1026 17:29:04.602099 1 helpers.go:246] server response object: %s[{",
+                '  "status": "Failure",',
+                '  "message": "the server rejected our request for an unknown reason",',
+                '  "reason": "BadRequest",',
+                '  "details": {',
+                '    "causes": [',
+                "      {",
+                '        "reason": "UnexpectedServerResponse",',
+                '        "message": "cannot parse `query` arg [foo | bad(]: unexpected pipe name '
+                '\\"bad\\"; context: [foo | bad]"',
+                "      }",
+                "    ]",
+                "  }",
+                "}]",
+            ]
         )
         run = FakeRun(
             (1, "", "Error from server (BadRequest): the server rejected our request\n"),
@@ -96,8 +154,7 @@ class KubectlFetchTest(unittest.TestCase):
         with self.assertRaisesRegex(
             CliError, r'VictoriaLogs не принял запрос: cannot parse .*unexpected pipe name "bad"'
         ):
-            transport.fetch("query", {"query": "x | bad("})
-        self.assertEqual(run.calls[1][:2], ["kubectl", "-v=8"])
+            transport.fetch("query", {"query": "foo | bad("})
 
     def test_kubectl_error(self):
         run = FakeRun((1, "", 'error: context "x" does not exist\n'))

@@ -19,8 +19,10 @@ from collections.abc import Iterator
 from .errors import CliError
 
 DEFAULT_TIMEOUT = 120
-# Тело ответа 400 kubectl показывает только с -v=8, строкой `"message": "<JSON-строка>"`.
-_K8S_MESSAGE = re.compile(r'"message":\s*("(?:[^"\\]|\\.)*")')
+# Тело ответа 400 kubectl показывает только с -v=8: блоком `"Response Body" body=<` либо
+# строкой `"message": "<JSON-строка>"` (сначала общий Status, последним — текст VictoriaLogs).
+_K8S_MESSAGE = re.compile(r'"message":\s*"((?:[^"\\]|\\.)*)"')
+_RESPONSE_BODY_START = '"Response Body" body=<'
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -100,6 +102,20 @@ def _remote_quote(part: str) -> str:
     return shlex.quote(part)
 
 
+def _response_body(stderr: str) -> str:
+    """Сырое тело ответа из блока `"Response Body" body=<` … ` >` в выводе -v=8."""
+    lines = stderr.splitlines()
+    for start, line in enumerate(lines):
+        if _RESPONSE_BODY_START in line:
+            body = []
+            for raw in lines[start + 1 :]:
+                if raw.strip() == ">":
+                    break
+                body.append(raw[1:] if raw[:1].isspace() else raw)
+            return "\n".join(body).strip()
+    return ""
+
+
 class KubectlTransport:
     """VictoriaLogs через прокси сервиса в API Kubernetes: `kubectl get --raw`, локально или по ssh."""
 
@@ -175,8 +191,17 @@ class KubectlTransport:
     def _bad_request_message(self, endpoint: str, params: dict[str, str]) -> str:
         """Текст ошибки VictoriaLogs из тела ответа: kubectl показывает его только с -v=8."""
         proc = self._run(self.command(endpoint, params, verbose=True))
-        match = _K8S_MESSAGE.search(proc.stderr.decode("utf-8", errors="replace"))
-        return json.loads(match.group(1)) if match else ""
+        stderr = proc.stderr.decode("utf-8", errors="replace")
+        body = _response_body(stderr)
+        if body:
+            return body
+        matches = _K8S_MESSAGE.findall(stderr)
+        if not matches:
+            return ""
+        try:
+            return json.loads(f'"{matches[-1]}"')
+        except ValueError:
+            return matches[-1]
 
 
 LOGS_DATASOURCE_TYPE = "victoriametrics-logs-datasource"
