@@ -229,13 +229,14 @@ class BrowserLogin:
                     self._say(
                         f"войди в {self.session.base_url} в открывшемся окне (жду до {minutes} минут) ..."
                     )
-                    logged_in_at = self.wall()
                     self._open(cwd, headed=True)
                     header = self._wait(cwd, LOGIN_TIMEOUT)
                     if not header:
                         raise CliError(
                             f"за {minutes} минут вход не завершился — запусти vmlogs-cli login ещё раз"
                         )
+                    # Отсчёт от момента захвата cookie: открытие окна Chrome трогает профиль раньше.
+                    logged_in_at = self.wall()
                 save_secret(self.session.path, header)
                 self._say(f"вход сохранён в {self.session.path}")
                 if logged_in_at is not None:
