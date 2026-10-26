@@ -24,7 +24,10 @@ def parse_point(value: str, now: datetime) -> str:
     """`15m`, `2h`, `1d`, `1w` — столько назад от now; иначе RFC3339 с часовым поясом."""
     match = _DURATION.match(value)
     if match:
-        return _fmt(now - timedelta(**{_UNITS[match.group(2)]: int(match.group(1))}))
+        try:
+            return _fmt(now - timedelta(**{_UNITS[match.group(2)]: int(match.group(1))}))
+        except OverflowError:
+            raise CliError(f"длительность «{value}» слишком большая") from None
     # Python 3.9 понимает в дробной части секунд только 3 или 6 цифр, VictoriaLogs пишет 9.
     text = _FRACTION.sub(
         lambda f: "." + f.group(1)[:6].ljust(6, "0"), value.replace("Z", "+00:00"), count=1
