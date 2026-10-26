@@ -18,11 +18,12 @@ build-backend = "hatchling.build"
 packages = ["vmlogs_cli"]
 
 [dependency-groups]
-dev = ["ruff>=0.6"]
+dev = ["ruff>=0.12"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]

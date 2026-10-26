@@ -15,6 +15,10 @@ class ParsePointTest(unittest.TestCase):
         self.assertEqual(parse_point("1d", NOW), "2026-10-25T12:00:00Z")
         self.assertEqual(parse_point("1w", NOW), "2026-10-19T12:00:00Z")
 
+    def test_huge_duration(self):
+        with self.assertRaisesRegex(CliError, "слишком большая"):
+            parse_point("99999999999w", NOW)
+
     def test_rfc3339(self):
         self.assertEqual(parse_point("2026-10-26T07:03:12Z", NOW), "2026-10-26T07:03:12Z")
         self.assertEqual(parse_point("2026-10-26T10:03:12+03:00", NOW), "2026-10-26T07:03:12Z")
