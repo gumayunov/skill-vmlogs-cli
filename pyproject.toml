@@ -3,7 +3,8 @@ name = "vmlogs-cli"
 version = "0.1.0"
 description = "Поиск логов в VictoriaLogs из терминала и для агентов: LogsQL как есть, компактный вывод"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = []
 
@@ -11,7 +12,7 @@ dependencies = []
 vmlogs-cli = "vmlogs_cli.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
