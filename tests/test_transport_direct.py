@@ -1,11 +1,19 @@
 import http.client
+import io
 import json
 import unittest
+import urllib.error
 from unittest import mock
 
 from tests.fakes import FakeServer, victorialogs
 from vmlogs_cli.errors import CliError
-from vmlogs_cli.transport import DirectTransport, iter_lines
+from vmlogs_cli.transport import (
+    DirectTransport,
+    host_label,
+    http_error_body,
+    iter_lines,
+    public_url,
+)
 
 
 class DirectTransportTest(unittest.TestCase):
@@ -35,6 +43,26 @@ class DirectTransportTest(unittest.TestCase):
         with self.assertRaisesRegex(CliError, "не ответил"):
             transport.fetch("query", {"query": "*"})
 
+    def test_unreachable_hides_userinfo(self):
+        transport = DirectTransport("http://u:p@127.0.0.1:9", timeout=2)
+        with self.assertRaises(CliError) as ctx:
+            transport.fetch("query", {"query": "*"})
+        self.assertIn("http://127.0.0.1:9 не ответил", str(ctx.exception))
+        self.assertNotIn("u:p", str(ctx.exception))
+
+    def test_redirect_is_explained(self):
+        server = FakeServer(lambda *a: (302, [("Location", "https://sso.example.com/in")], ""))
+        try:
+            transport = DirectTransport(server.url)
+            with self.assertRaises(CliError) as ctx:
+                transport.fetch("query", {"query": "*"})
+            self.assertEqual(
+                str(ctx.exception),
+                f"{server.url} отвечает 302 на https://sso.example.com/in — проверь VMLOGS_URL",
+            )
+        finally:
+            server.close()
+
     def test_describe(self):
         self.assertEqual(self.transport.describe(), f"direct {self.vl.url}")
 
@@ -48,6 +76,25 @@ class DirectTransportTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(CliError, "не ответил"):
                 self.transport.fetch("query", {"query": "*"})
+
+
+class HttpErrorBodyTest(unittest.TestCase):
+    def test_error_is_closed_after_reading(self):
+        fp = io.BytesIO(b" boom \n")
+        error = urllib.error.HTTPError("http://x", 500, "err", {}, fp)
+        self.assertEqual(http_error_body(error), "boom")
+        self.assertTrue(fp.closed)
+
+
+class HostLabelTest(unittest.TestCase):
+    def test_hostname_port_without_userinfo(self):
+        self.assertEqual(host_label("http://u:p@vl.example.com:9428/x"), "vl.example.com:9428")
+        self.assertEqual(host_label("https://vl.example.com"), "vl.example.com")
+
+    def test_ipv6_in_brackets(self):
+        self.assertEqual(host_label("http://[::1]:9428"), "[::1]:9428")
+        self.assertEqual(host_label("http://[::1]"), "[::1]")
+        self.assertEqual(public_url("http://u:p@[::1]:9428"), "http://[::1]:9428")
 
 
 class BrokenResponse:

@@ -2,6 +2,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.parse
@@ -168,6 +169,14 @@ class KubectlFetchTest(unittest.TestCase):
         with self.assertRaisesRegex(CliError, r"ssh box: ssh: connect.*\n.*ssh box true"):
             transport.fetch("query", {"query": "*"})
 
+    def test_timeout(self):
+        def run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 7)
+
+        transport = KubectlTransport("monitoring/vl:9428", timeout=7, run=run)
+        with self.assertRaisesRegex(CliError, "kubectl не ответил за 7 с"):
+            transport.fetch("query", {"query": "*"})
+
     def test_missing_binary(self):
         def run(cmd, **kwargs):
             raise FileNotFoundError(cmd[0])
@@ -177,15 +186,15 @@ class KubectlFetchTest(unittest.TestCase):
             transport.fetch("query", {"query": "*"})
 
 
-KUBECTL_STUB = """#!/usr/bin/env python3
+KUBECTL_STUB = f"""#!{sys.executable}
 import json, os, sys
 with open(os.environ["STUB_LOG"], "a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
-print('{"c":"1"}')
+print('{{"c":"1"}}')
 """
 
 # Настоящий ssh склеивает аргументы и отдаёт удалённой оболочке; заглушка делает то же через sh -c.
-SSH_STUB = """#!/usr/bin/env python3
+SSH_STUB = f"""#!{sys.executable}
 import subprocess, sys
 args = sys.argv[1:]
 while args[0] == "-o":
@@ -198,6 +207,7 @@ class KubectlOverSshStubTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         bin_dir = Path(self.tmp.name)
+        self.home = bin_dir / "remote home"  # с пробелом: заодно проверяет кавычки
         self.log = bin_dir / "kubectl.log"
         for name, text in (("kubectl", KUBECTL_STUB), ("ssh", SSH_STUB)):
             (bin_dir / name).write_text(text)
@@ -206,6 +216,7 @@ class KubectlOverSshStubTest(unittest.TestCase):
             **os.environ,
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "STUB_LOG": str(self.log),
+            "HOME": str(self.home),
         }
 
     def tearDown(self):
@@ -213,6 +224,17 @@ class KubectlOverSshStubTest(unittest.TestCase):
 
     def run_with_stubs(self, cmd, **kwargs):
         return subprocess.run(cmd, env=self.env, **kwargs)
+
+    def test_remote_shell_expands_tilde_in_kubeconfig(self):
+        transport = KubectlTransport(
+            "monitoring/vl:9428",
+            kubeconfig="~/.kube/my cfg",
+            ssh_host="box",
+            run=self.run_with_stubs,
+        )
+        list(transport.fetch("query", {"query": "*"}))
+        argv = json.loads(self.log.read_text().splitlines()[-1])
+        self.assertEqual(argv[:2], ["--kubeconfig", f"{self.home}/.kube/my cfg"])
 
     def test_query_and_limit_survive_remote_shell(self):
         transport = KubectlTransport(

@@ -106,6 +106,22 @@ class GrafanaTransportTest(unittest.TestCase):
         with self.assertRaisesRegex(CliError, "VictoriaLogs не принял запрос: cannot parse"):
             self.transport().fetch("query", {"query": "x | bad("})
 
+    def test_unreachable_hides_userinfo(self):
+        base = "http://u:p@127.0.0.1:9"
+        session = GrafanaSession(base, self.cookie, timeout=2)
+        save_secret(self.cookie, GOOD)
+        transport = GrafanaTransport(base, "Logs", session, timeout=2)
+        with self.assertRaises(CliError) as ctx:
+            transport.datasources()
+        self.assertIn("http://127.0.0.1:9 не ответил", str(ctx.exception))
+        self.assertNotIn("u:p", str(ctx.exception))
+
+    def test_no_cookie_message_hides_userinfo(self):
+        session = GrafanaSession("http://u:p@127.0.0.1:9", self.cookie)
+        with self.assertRaises(CliError) as ctx:
+            session.header()
+        self.assertNotIn("u:p", str(ctx.exception))
+
     def test_redirect_reports_location(self):
         server = FakeServer(grafana(redirect=True))
         try:
