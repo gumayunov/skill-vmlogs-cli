@@ -144,11 +144,14 @@ class App:
         lines = self.transport.fetch("query", params)
         if a.out:
             count, names = 0, set()
-            with open(a.out, "w", encoding="utf-8") as fh:
-                for line in lines:
-                    fh.write(line + "\n")
-                    names.update(json.loads(line))
-                    count += 1
+            try:
+                with open(a.out, "w", encoding="utf-8") as fh:
+                    for line in lines:
+                        fh.write(line + "\n")
+                        names.update(json.loads(line))
+                        count += 1
+            except OSError as e:
+                raise CliError(f"не удалось записать {a.out}: {e.strerror or e}") from None
             self._print(f"{count} строк → {a.out}")
             self._print(
                 "поля: " + ", ".join(sorted(n for n in names if not is_hidden(n, self.hide)))
@@ -243,7 +246,14 @@ def run(
         settings = load_settings(env, cwd, args.env)
         transport = make_transport(settings, args.ds, args.timeout, env)
         app = App(args, settings, transport, env, now or datetime.now(timezone.utc), out, err)
-        getattr(app, args.cmd)()
+        try:
+            getattr(app, args.cmd)()
+        except (KeyError, AttributeError, TypeError) as e:
+            print(
+                f"vmlogs-cli: ответ не похож на ответ VictoriaLogs ({type(e).__name__}: {e})",
+                file=err,
+            )
+            return 1
         return 0
     except CliError as e:
         print(f"vmlogs-cli: {e}", file=err)
