@@ -109,6 +109,36 @@ class LoadSettingsTest(unittest.TestCase):
         with self.assertRaisesRegex(CliError, "неизвестные ключи VMLOGS_UR"):
             self.load("VMLOGS_TRANSPORT=direct\nVMLOGS_URL=x\nVMLOGS_UR=y\n")
 
+    def test_foreign_keys_are_ignored(self):
+        s = self.load("VMLOGS_TRANSPORT=direct\nVMLOGS_URL=http://vl:9428\nAWS_REGION=x\n")
+        self.assertEqual(s.url, "http://vl:9428")
+
+    def test_url_without_scheme(self):
+        with self.assertRaisesRegex(CliError, "VMLOGS_URL.*http://.*https://shop.example.com"):
+            self.load("VMLOGS_TRANSPORT=direct\nVMLOGS_URL=shop.example.com\n")
+
+    def test_grafana_url_without_scheme(self):
+        with self.assertRaisesRegex(CliError, "VMLOGS_GRAFANA_URL.*https://grafana.example.com"):
+            self.load("VMLOGS_TRANSPORT=grafana\nVMLOGS_GRAFANA_URL=grafana.example.com\n")
+
+    def test_url_with_other_scheme(self):
+        with self.assertRaisesRegex(CliError, "VMLOGS_URL"):
+            self.load("VMLOGS_TRANSPORT=direct\nVMLOGS_URL=ftp://vl.example.com\n")
+
+    def test_ssh_host_looking_like_option(self):
+        with self.assertRaisesRegex(CliError, "VMLOGS_SSH_HOST"):
+            self.load(
+                "VMLOGS_TRANSPORT=kubectl\nVMLOGS_KUBE_SERVICE=monitoring/vl:9428\n"
+                "VMLOGS_SSH_HOST=-oProxyCommand=id\n"
+            )
+
+    def test_ssh_host_with_whitespace(self):
+        with self.assertRaisesRegex(CliError, "VMLOGS_SSH_HOST"):
+            self.load(
+                "VMLOGS_TRANSPORT=kubectl\nVMLOGS_KUBE_SERVICE=monitoring/vl:9428\n"
+                "VMLOGS_SSH_HOST=box id\n"
+            )
+
     def test_bad_transport(self):
         with self.assertRaisesRegex(CliError, "VMLOGS_TRANSPORT должен быть"):
             self.load("VMLOGS_TRANSPORT=http\n")

@@ -68,6 +68,10 @@ class ShortLineTest(unittest.TestCase):
         row = {"kubernetes.container_name": "api", "c": "12"}
         self.assertEqual(short_line(row, 1000, DEFAULT_HIDE), "kubernetes.container_name=api c=12")
 
+    def test_stats_row_is_truncated(self):
+        row = {"_stream": "x" * 50, "c": "1"}
+        self.assertEqual(short_line(row, 10, DEFAULT_HIDE), "_stream=xx… [truncated: 10/62 chars]")
+
     def test_stats_row_with_time_bucket(self):
         row = {"_time": "2026-10-26T07:00:00Z", "c": "3"}
         self.assertEqual(short_line(row, 1000, DEFAULT_HIDE), "_time=2026-10-26T07:00:00Z c=3")
